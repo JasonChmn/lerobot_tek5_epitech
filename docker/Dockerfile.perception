@@ -1,0 +1,23 @@
+# Container PERCEPTION — ROS2 Jazzy + OpenCV
+# Volontairement minimal : les étudiants ajoutent ce qu'ils veulent
+# (YOLO/ultralytics, etc.) dans leur propre couche.
+FROM ros:jazzy-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    ros-jazzy-cv-bridge \
+    ros-jazzy-tf2-ros \
+    ros-jazzy-image-transport \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --break-system-packages --no-cache-dir \
+    opencv-python-headless numpy
+
+# Les étudiants étendent cette image :
+#   FROM tek5/perception
+#   RUN pip install --break-system-packages ultralytics   # si YOLO
+
+WORKDIR /ros2_ws
+CMD ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && bash"]

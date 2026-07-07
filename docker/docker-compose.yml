@@ -1,0 +1,48 @@
+# Lancement :
+#   docker compose up -d control perception     # simu (défaut)
+#   docker compose --profile real up -d          # bonus bras réel (Linux only)
+#
+# Bridge perception <-> contrôle = topics ROS2 (DDS) sur le réseau compose
+# partagé. Le multicast DDS fonctionne entre containers d'un même réseau
+# bridge ; ROS_DOMAIN_ID isole les groupes qui partagent une machine.
+
+services:
+  control:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.control
+    image: tek5/control
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - MUJOCO_GL=osmesa
+    volumes:
+      - ../ros2_ws:/ros2_ws
+    networks: [rosnet]
+    stdin_open: true
+    tty: true
+
+  perception:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.perception
+    image: tek5/perception
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    volumes:
+      - ../ros2_ws:/ros2_ws
+    networks: [rosnet]
+    stdin_open: true
+    tty: true
+
+  # Bonus hardware — nécessite Linux (passthrough /dev). Adapter le port série.
+  control-real:
+    profiles: [real]
+    extends: control
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+
+networks:
+  rosnet:
+    driver: bridge
