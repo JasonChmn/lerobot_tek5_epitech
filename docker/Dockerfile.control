@@ -4,7 +4,8 @@ FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     MUJOCO_GL=osmesa \
-    PYOPENGL_PLATFORM=osmesa
+    PYOPENGL_PLATFORM=osmesa \
+    LIBGL_ALWAYS_SOFTWARE=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \

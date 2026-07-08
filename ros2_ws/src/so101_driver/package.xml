@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>so101_driver</name>
+  <version>0.1.0</version>
+  <description>Nœud driver ROS2 du SO-ARM101 — publie /joint_states et expose les services de manipulation.</description>
+  <maintainer email="tek5@epitech.eu">Tek5 Robotics</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>rospy</depend>
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

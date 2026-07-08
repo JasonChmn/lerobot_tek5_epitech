@@ -50,7 +50,7 @@ Ce terminal reste ouvert pour toutes tes commandes `jog.py`.
 
 ```bash
 cd docker
-docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && rviz2"
+docker compose exec control bash -lc "LIBGL_ALWAYS_SOFTWARE=1 && source /opt/ros/jazzy/setup.bash && rviz2"
 ```
 
 La fenêtre RViz s'ouvre sur ton bureau. Configure une fois (voir §6), puis
