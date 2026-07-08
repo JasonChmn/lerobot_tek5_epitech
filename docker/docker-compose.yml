@@ -1,10 +1,16 @@
 # Lancement :
-#   docker compose up -d control perception     # simu (défaut)
-#   docker compose --profile real up -d          # bonus bras réel (Linux only)
+#   xhost +local:docker                          # une fois par session (accès X11)
+#   docker compose up -d control perception viz  # simu (défaut)
+#   docker compose --profile real up -d          # bonus bras réel
 #
 # Bridge perception <-> contrôle = topics ROS2 (DDS) sur le réseau compose
 # partagé. Le multicast DDS fonctionne entre containers d'un même réseau
 # bridge ; ROS_DOMAIN_ID isole les groupes qui partagent une machine.
+#
+# Visualisation : RViz s'exécute DANS le container control (X11 forwardé),
+# donc sur le réseau DDS interne — aucun besoin de --network host.
+
+name: tek5
 
 services:
   control:
@@ -15,8 +21,12 @@ services:
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - MUJOCO_GL=osmesa
+      - DISPLAY=${DISPLAY}
+      - QT_QPA_PLATFORM=xcb        # robuste X11 et XWayland
     volumes:
       - ../ros2_ws:/ros2_ws
+      - ../scripts:/opt/so101/scripts:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
     networks: [rosnet]
     stdin_open: true
     tty: true
@@ -34,7 +44,25 @@ services:
     stdin_open: true
     tty: true
 
-  # Bonus hardware — nécessite Linux (passthrough /dev). Adapter le port série.
+  # robot_state_publisher : publie /robot_description et les TF depuis
+  # /joint_states (fournis par le driver_node étudiant). La visu se fait
+  # avec RViz depuis le container control — voir docs/INSTRUCTION.md.
+  viz:
+    image: tek5/control
+    depends_on: [control]
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    volumes:
+      - ../ros2_ws:/ros2_ws
+    networks: [rosnet]
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      cd /ros2_ws &&
+      colcon build --packages-select so101_description --symlink-install &&
+      source install/setup.bash &&
+      ros2 launch so101_description viz.launch.py"
+
+  # Bonus hardware — passthrough /dev. Adapter le port série.
   control-real:
     profiles: [real]
     extends: control

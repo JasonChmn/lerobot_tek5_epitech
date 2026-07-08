@@ -4,23 +4,24 @@ Module robotique Tek5 (Epitech). Un bras SO-ARM101 (écosystème
 LeRobot/HuggingFace), un jumeau numérique MuJoCo, et un pipeline complet
 perception → IK → pick & place à construire en ROS2.
 
-## Structure
+**Prérequis : hôte Linux** (natif ou VM) avec Docker. La visualisation
+(RViz) et le bonus bras réel l'exigent — c'est l'environnement du métier.
 
-```
+## Structure
 core/lerobot_min/   Driver réel SO-ARM101 (extrait minimal de LeRobot, Apache-2.0)
 sim/                Jumeau numérique MuJoCo (SO101Sim, même API que le driver réel)
 docker/             Images control + perception, docker-compose (réseau DDS partagé)
 ros2_ws/            Workspace étudiant (contient un package d'exemple)
 docs/               SUJET.md (sujet étudiant) · README_IK.md (guide IK/ikpy)
 scripts/            Démos et outils instructeur
-```
 
 ## Démarrage rapide
 
 ```bash
 cd docker
 docker compose build
-docker compose up -d control perception
+xhost +local:docker                      # accès X11 (RViz)
+docker compose up -d control perception viz
 docker compose exec control bash    # terminal 1
 docker compose exec perception bash # terminal 2
 # dans chaque : cd /ros2_ws && colcon build && source install/setup.bash
@@ -32,7 +33,15 @@ Test de la sim sans ROS2 (dans le container control) :
 python3 -c "from so101_sim import SO101Sim; s=SO101Sim(); s.connect(); print(list(s.get_observation())); s.disconnect()"
 ```
 
-## Bras réel (bonus, Linux uniquement)
+Visualisation (RViz depuis le container control) :
+
+```bash
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && rviz2"
+```
+
+Voir `docs/INSTRUCTION.md` §5 pour la configuration RViz et le dépannage.
+
+## Bras réel (bonus)
 
 ```bash
 # identifier le port : ls /dev/ttyACM*

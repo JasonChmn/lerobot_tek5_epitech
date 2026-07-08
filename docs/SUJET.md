@@ -52,6 +52,26 @@ deux containers :
 - Machine à états explicite exigée. Gestion de l'asynchronisme : le contrôle
   ne bloque **jamais** en attente de perception (dernière valeur connue).
 
+## Visualiser votre robot
+
+Le service `viz` du compose (`docker compose up -d control viz`) publie le
+modèle du bras et expose un pont websocket sur le port 8765.
+
+- **Foxglove Studio** (recommandé, tous OS) : app native ou
+  https://app.foxglove.dev → *Open connection* → `ws://localhost:8765` →
+  panneau 3D (ajouter *RobotModel*) + panneau *Image* sur votre topic caméra.
+- **RViz2** (équivalent, si vous avez ROS2 Jazzy installé nativement sur
+  Ubuntu) : mêmes topics, mêmes affichages (*RobotModel*, *TF*, *Image*).
+  Attention : RViz doit voir le graphe DDS — lancez vos containers en
+  `--network host` (Linux uniquement) avec le même `ROS_DOMAIN_ID`.
+  Aucun avantage fonctionnel pour ce projet ; c'est l'outil standard de
+  l'écosystème ROS, utile à connaître.
+
+Dans les deux cas : tant que votre `driver_node` ne publie pas
+`/joint_states`, le bras apparaît **en morceaux** — c'est normal, c'est le
+jalon S2. La boule n'apparaîtra que si votre perception la publie (Marker) :
+la visu affiche ce que *votre* code voit, pas la vérité terrain.
+
 ## Contraintes
 
 - Consignes moteur : passer par `/joint_command`, jamais d'accès direct au

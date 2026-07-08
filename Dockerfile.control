@@ -1,4 +1,4 @@
-# Container CONTRÔLE — ROS2 Jazzy + driver SO-ARM101 (réel + sim MuJoCo) + RViz
+# Container CONTRÔLE — ROS2 Jazzy + driver SO-ARM101 (réel + sim MuJoCo)
 # Build : docker compose build control
 FROM ros:jazzy-ros-base
 
@@ -10,13 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     libosmesa6 \
     libgl1 \
-    libgl1-mesa-dri \
     ros-jazzy-cv-bridge \
     ros-jazzy-tf2-ros \
     ros-jazzy-tf-transformations \
-    ros-jazzy-robot-state-publisher \
-    ros-jazzy-joint-state-publisher \
-    ros-jazzy-rviz2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Packages fournis (driver + sim). ikpy installé ici : c'est aux étudiants
@@ -29,8 +25,6 @@ RUN pip install --break-system-packages --no-cache-dir \
 # Workspace étudiant monté en volume (voir docker-compose.yml)
 WORKDIR /ros2_ws
 
-# RViz : nécessite X11 forwardé (DISPLAY + /tmp/.X11-unix, voir compose)
-# et `xhost +local:docker` sur l'hôte. Sans accélération GPU dans le
-# container, fallback : LIBGL_ALWAYS_SOFTWARE=1 rviz2
-# Accès au bus série pour le bras réel : voir compose, service control-real
+# Accès au bus série pour le bras réel : lancer le container avec
+#   --device /dev/ttyACM0  (voir compose, service control-real)
 CMD ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && bash"]

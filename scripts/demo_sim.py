@@ -1,6 +1,7 @@
 """Démo instructeur : rend une image de la scène et fait bouger le bras.
 
-Usage : MUJOCO_GL=osmesa python3 scripts/demo_sim.py [sortie.png]
+Usage local (hôte, aucune variable env) : python3 scripts/demo_sim.py [sortie.png]
+Dans Docker : les variables MUJOCO_GL/PYOPENGL_PLATFORM sont déjà dans l'image.
 Pour la fenêtre interactive (hors Docker, avec affichage) :
     python3 -m mujoco.viewer --mjcf sim/so101_sim/assets/so101/scene_tek5.xml
 """
