@@ -1,0 +1,3 @@
+- Always read DESIGN.md, README.md, and README_DETAILED.md at the start of each conversation.
+- This is a robotics project using ROS2. Everything runs in Docker. See docker compose in docker/.
+- In plan mode: you are FORBIDDEN from editing, writing to, or deleting any files. Only read and plan.

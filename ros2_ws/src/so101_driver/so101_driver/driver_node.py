@@ -16,9 +16,8 @@ Topics :
   Pub : /external_cam/camera_info (sensor_msgs/CameraInfo, 15 Hz, sim uniquement)
 
 Services :
-  /set_joint_positions (so101_interfaces/SetJointPositions) :
+  /driver/set_joints (so101_interfaces/SetJointPositions) :
         consigne 6 joints [deg×5, %], ordre JOINT_NAMES. Non bloquant.
-  /pick_ball, /place_ball (std_srvs/Empty) : séquences de démonstration.
 
 Paramètres :
   use_sim (bool) · cam_K, cam_T (float64[], publiés en sim pour la perception)
@@ -30,15 +29,15 @@ consigne exactement comme les servos du bras réel.
 """
 import math
 import threading
-import time
 from pathlib import Path
 
 import rclpy
 import rclpy.node
-from rclpy.callback_groups import ReentrantCallbackGroup
+
 from rclpy.executors import MultiThreadedExecutor
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_srvs.srv import Empty
+
 
 from so101_interfaces.srv import SetJointPositions
 
@@ -89,29 +88,22 @@ class DriverNode(rclpy.node.Node):
         self._cmd_sub = self.create_subscription(
             JointState, "joint_command", self._cb_joint_command, 10
         )
+        self._drop_box_pub = self.create_publisher(PoseStamped, "drop_box_position", 10)
         if self._use_sim:
             self._cam_pub = self.create_publisher(Image, "external_cam/image_raw", 10)
             self._cam_info_pub = self.create_publisher(
                 CameraInfo, "external_cam/camera_info", 10
             )
 
-        # -- services (groupe réentrant : les séquences pick/place bloquent
-        #    leur thread, pas les timers — exécuteur multi-thread requis) ------
-        self._srv_group = ReentrantCallbackGroup()
+        # -- services ----------------------------------------------------------
         self._set_joints_srv = self.create_service(
-            SetJointPositions, "set_joint_positions", self._cb_set_joints,
-            callback_group=self._srv_group,
-        )
-        self._pick_srv = self.create_service(
-            Empty, "pick_ball", self._cb_pick, callback_group=self._srv_group
-        )
-        self._place_srv = self.create_service(
-            Empty, "place_ball", self._cb_place, callback_group=self._srv_group
+            SetJointPositions, "driver/set_joints", self._cb_set_joints,
         )
 
         # -- timers ------------------------------------------------------------
         self._ctrl_timer = self.create_timer(1.0 / CONTROL_HZ, self._control_step)
         self._js_timer = self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
+        self._drop_box_timer = self.create_timer(0.1, self._publish_drop_box_position)
         if self._use_sim:
             self._cam_timer = self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
 
@@ -199,6 +191,21 @@ class DriverNode(rclpy.node.Node):
         js.position.append(_gripper_pct_to_rad(obs["gripper.pos"]))
         self._joint_pub.publish(js)
 
+    def _publish_drop_box_position(self):
+        """Publier la position de la drop_box depuis MuJoCo."""
+        try:
+            with self._arm_lock:
+                pos = self._arm.get_drop_box_position()
+        except Exception:
+            return
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "world"
+        msg.pose.position.x = float(pos[0])
+        msg.pose.position.y = float(pos[1])
+        msg.pose.position.z = float(pos[2])
+        self._drop_box_pub.publish(msg)
+
     def _publish_camera(self):
         """Publier l'image caméra + CameraInfo (sim)."""
         try:
@@ -243,35 +250,6 @@ class DriverNode(rclpy.node.Node):
                 self._target[f"{name}.pos"] = float(pos)
         response.success = True
         response.message = "Consigne appliquée."
-        return response
-
-    def _set_and_settle(self, action: dict, duration: float = 1.5):
-        """Poser une consigne et attendre la convergence (la boucle 50 Hz applique)."""
-        with self._target_lock:
-            self._target.update(action)
-        time.sleep(duration)
-
-    def _cb_pick(self, request, response):
-        """Démo : approcher la zone de saisie et fermer le gripper."""
-        self.get_logger().info("pick_ball : séquence de démonstration...")
-        self._set_and_settle({f"{j}.pos": 0.0 for j in ARM_JOINTS} | {"gripper.pos": 100.0})
-        self._set_and_settle({
-            "shoulder_pan.pos": 0.0, "shoulder_lift.pos": 10.0, "elbow_flex.pos": 40.0,
-            "wrist_flex.pos": -30.0, "wrist_roll.pos": 0.0, "gripper.pos": 100.0,
-        })
-        self._set_and_settle({"gripper.pos": 0.0}, duration=1.0)
-        self.get_logger().info("pick_ball : gripper fermé.")
-        return response
-
-    def _cb_place(self, request, response):
-        """Démo : aller au point de pose et ouvrir le gripper."""
-        self.get_logger().info("place_ball : séquence de démonstration...")
-        self._set_and_settle({
-            "shoulder_pan.pos": -75.0, "shoulder_lift.pos": 10.0, "elbow_flex.pos": 40.0,
-            "wrist_flex.pos": -30.0, "wrist_roll.pos": 0.0,
-        })
-        self._set_and_settle({"gripper.pos": 100.0}, duration=1.0)
-        self.get_logger().info("place_ball : gripper ouvert.")
         return response
 
 

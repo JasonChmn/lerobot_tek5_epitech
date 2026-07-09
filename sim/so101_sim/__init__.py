@@ -143,6 +143,10 @@ class SO101Sim:
         Interdit dans le pipeline étudiant : la position doit venir de la perception."""
         return self.data.body("gold_ball").xpos.copy()
 
+    def get_drop_box_position(self) -> np.ndarray:
+        """Position monde de la drop_box."""
+        return self.data.body("drop_box").xpos.copy()
+
     def get_camera_extrinsics(self) -> np.ndarray:
         """Pose caméra->monde (4x4). C'est la 'TF fournie' du sujet."""
         cam = self.data.camera(self.camera_name)

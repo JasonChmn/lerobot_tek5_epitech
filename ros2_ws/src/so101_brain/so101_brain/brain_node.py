@@ -8,12 +8,12 @@ Topics :
         /brain_state      (std_msgs/String, 10 Hz)
 
 Services :
-  /brain/go_to_target     (so101_interfaces/GoToTarget) : IK vers une position 3D
-  /brain/start_autonomous (std_srvs/SetBool)            : lance la boucle pick & place
-  /brain/stop_autonomous  (std_srvs/SetBool)            : arrête la boucle
+  /brain/go_to            (so101_interfaces/GoToTarget) : IK vers une position 3D
+  /brain/start            (std_srvs/Trigger)            : lance la boucle pick & place
+  /brain/stop             (std_srvs/Trigger)            : arrête la boucle
 
 Conformément au DESIGN : toutes les commandes moteur passent par /joint_command.
-Le service /set_joint_positions du driver reste disponible pour les tests manuels.
+Le service /driver/set_joints du driver reste disponible pour les tests manuels.
 
 IK : ikpy sur l'URDF officiel du SO-101 (celui du package so101_sim). Seed =
 configuration courante (issue de /joint_states, déjà en radians). Une cible dont
@@ -30,7 +30,7 @@ from geometry_msgs.msg import PoseStamped
 from ikpy import chain as ik_chain
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
-from std_srvs.srv import SetBool
+from std_srvs.srv import Trigger
 
 from so101_interfaces.srv import GoToTarget
 
@@ -102,9 +102,9 @@ class BrainNode(rclpy.node.Node):
         self.create_subscription(PoseStamped, "ball_position_3d", self._cb_ball, 10)
 
         # -- services ---------------------------------------------------------------
-        self.create_service(GoToTarget, "brain/go_to_target", self._cb_go_to_target)
-        self.create_service(SetBool, "brain/start_autonomous", self._cb_start_autonomous)
-        self.create_service(SetBool, "brain/stop_autonomous", self._cb_stop_autonomous)
+        self.create_service(GoToTarget, "brain/go_to", self._cb_go_to)
+        self.create_service(Trigger, "brain/start", self._cb_start)
+        self.create_service(Trigger, "brain/stop", self._cb_stop)
 
         self.create_timer(1.0 / 10.0, self._publish_state)
         self._set_state("idle")
@@ -123,7 +123,7 @@ class BrainNode(rclpy.node.Node):
         with self._lock:
             self._ball_pose = msg
 
-    def _cb_go_to_target(self, request, response):
+    def _cb_go_to(self, request, response):
         """IK vers une position 3D cible, puis publication sur /joint_command."""
         target = [
             request.target_pose.pose.position.x,
@@ -143,7 +143,7 @@ class BrainNode(rclpy.node.Node):
         self.get_logger().info(response.message)
         return response
 
-    def _cb_start_autonomous(self, request, response):
+    def _cb_start(self, request, response):
         if self._autonomous:
             response.success = False
             response.message = "Déjà en mode autonome."
@@ -155,7 +155,7 @@ class BrainNode(rclpy.node.Node):
         response.message = "Pick & place autonome démarré."
         return response
 
-    def _cb_stop_autonomous(self, request, response):
+    def _cb_stop(self, request, response):
         self._autonomous = False
         self._set_state("idle")
         response.success = True

@@ -28,8 +28,8 @@ cible `ament_cmake_python_copy_so101_driver` dupliquée).
 | Publie `/joint_states` en **RADIANS** (REP-103, requis par robot_state_publisher/RViz), 30 Hz | [Y] | `driver_node.py` `_publish_joint_states()` |
 | Publie `/external_cam/image_raw` + `/external_cam/camera_info` (sim, 15 Hz, image réutilisée de get_observation — pas de double rendu OSMesa) | [Y] | `driver_node.py` `_publish_camera()` |
 | Publie `cam_K` / `cam_T` comme paramètres ROS2 (sim) | [Y] | `driver_node.py` `_connect_arm()` |
-| Service `/set_joint_positions` (so101_interfaces, non bloquant) | [Y] | `driver_node.py` `_cb_set_joints()` |
-| Services démo `/pick_ball` `/place_ball` (MultiThreadedExecutor + groupe réentrant — ne bloquent pas les timers) | [Y] | `driver_node.py` |
+| Service `/driver/set_joints` (so101_interfaces, non bloquant) | [Y] | `driver_node.py` `_cb_set_joints()` |
+
 | Launch avec arg `use_sim` (ParameterValue bool) + `port` | [Y] | `launch/driver.launch.py` |
 | cv_bridge pour l'image | [N] | conversion manuelle `.tobytes()` conservée (suffisante, une dépendance de moins côté control) |
 
@@ -54,7 +54,7 @@ cible `ament_cmake_python_copy_so101_driver` dupliquée).
 | `active_links_mask=[False,True×5,False]` (7 maillons, vérifié) | [Y] | `brain_node.py` |
 | Seed IK = configuration courante (radians, sans double conversion) | [Y] | `brain_node.py` `_seed()` |
 | Rejet cible si erreur FK > `ik_tolerance` (2 cm) + retour idle | [Y] | `brain_node.py` `_solve_ik()` / `_ik_move()` |
-| Services `brain/go_to_target` (GoToTarget), `brain/start|stop_autonomous` (SetBool) — types réels importés, plus de chaînes passées à create_service | [Y] | `brain_node.py` |
+| Services `brain/go_to` (GoToTarget), `brain/start`/`brain/stop` (Trigger) — types réels importés, plus de chaînes passées à create_service | [Y] | `brain_node.py` |
 | Machine à états pick & place (home→approach→down→grasp→lift→transport→place→home) | [Y] | `brain_node.py` `_autonomous_loop()` |
 | Tuning préhension (orientation pince, offsets, PICK_APPROACH_Z vs limite workspace r≈0.27 m) | [N] | à régler en visu — l'infra est là, la saisie éjecte encore la boule |
 
