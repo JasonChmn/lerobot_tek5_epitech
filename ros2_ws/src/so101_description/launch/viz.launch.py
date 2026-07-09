@@ -35,6 +35,12 @@ def generate_launch_description():
             executable="robot_state_publisher",
             parameters=[{"robot_description": robot_description}],
         ),
+        # world → base_link : identique au cadre MuJoCo (base du robot à l'origine monde)
+        Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            arguments=["--frame-id", "world", "--child-frame-id", "base_link"],
+        ),
         # Smoke test uniquement — en usage normal, /joint_states vient du driver_node.
         Node(
             package="joint_state_publisher",
