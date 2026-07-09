@@ -108,8 +108,9 @@ Le backend (**MuJoCo** ou **SO101Follower**) **ne publie jamais directement de t
 
 | Élément | Convention |
 |---------|------------|
-| Angles | Degrés absolus (`0°` = bras vertical) |
-| Gripper | Pourcentage d'ouverture (`0–100 %`) |
+| `/joint_command` | Degrés absolus (`0°` = bras vertical), gripper `0–100 %` |
+| `/joint_states` | **Radians** (REP-103 — requis par `robot_state_publisher`/RViz), gripper converti % → rad via limites URDF |
+| Backend (`send_action`/`get_observation`) | Degrés, gripper `0–100 %` |
 | Driver | ≥ 20 Hz |
 | Perception | 5–10 Hz |
 | Commandes | 50–100 Hz |

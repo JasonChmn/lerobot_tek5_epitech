@@ -2,49 +2,38 @@
 """brain_node.py — intelligence du bras : IK + boucle pick & place.
 
 Topics :
-  Sub : /joint_states (sensor_msgs/JointState)
-       : /ball_position_3d (geometry_msgs/PoseStamped)
-  Pub : /brain_state (std_msgs/String) — etats de la boucle
+  Sub : /joint_states     (sensor_msgs/JointState, RADIANS — publié par le driver)
+        /ball_position_3d (geometry_msgs/PoseStamped, repère world/robot)
+  Pub : /joint_command    (sensor_msgs/JointState, DEGRÉS, gripper 0-100 %)
+        /brain_state      (std_msgs/String, 10 Hz)
 
 Services :
-  /brain/start_autonomous  : lance la boucle pick & place
-  /brain/stop_autonomous   : arrete la boucle
-  /brain/go_to_target      : IK vers une position 3D cible
+  /brain/go_to_target     (so101_interfaces/GoToTarget) : IK vers une position 3D
+  /brain/start_autonomous (std_srvs/SetBool)            : lance la boucle pick & place
+  /brain/stop_autonomous  (std_srvs/SetBool)            : arrête la boucle
 
-Parametres :
-  - use_sim (bool) : identique au driver
-  - pick_place_duration (float) : temps entre chaque cycle
+Conformément au DESIGN : toutes les commandes moteur passent par /joint_command.
+Le service /set_joint_positions du driver reste disponible pour les tests manuels.
 
-Fonctionnement :
-  1. Lire /joint_states -> configuration courante (initial_position pour IK)
-  2. Lire /ball_position_3d -> cible
-  3. IK numerique via ikpy -> consignes
-  4. Envoyer au driver via service /set_joint_positions
-  5. Boucle pick & place : home -> over ball -> down -> close -> lift -> over home -> down -> open -> home
+IK : ikpy sur l'URDF officiel du SO-101 (celui du package so101_sim). Seed =
+configuration courante (issue de /joint_states, déjà en radians). Une cible dont
+l'erreur résiduelle FK dépasse `ik_tolerance` (2 cm) est rejetée -> retour idle.
 """
-import sys
 import threading
-
-sys.path.insert(0, "sim")
+import time
+from pathlib import Path
 
 import numpy as np
 import rclpy
 import rclpy.node
-from ikpy import chain as ik_chain
-from std_msgs.msg import String
-from std_srvs.srv import Empty, SetBool
-from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Float64MultiArray
+from ikpy import chain as ik_chain
+from sensor_msgs.msg import JointState
+from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
+from so101_interfaces.srv import GoToTarget
 
-# -- IK -----------------------------------------------------------------------
-IK_CHAIN = ik_chain.Chain.from_urdf_file(
-    "sim/so101_sim/assets/so101/so101_new_calib.urdf",
-    active_links_mask=[False, True, True, True, True, True, False],
-)
-
-# Noms des 5 joints actifs (sans le gripper)
 ARM_JOINT_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -52,346 +41,273 @@ ARM_JOINT_NAMES = [
     "wrist_flex",
     "wrist_roll",
 ]
-
 JOINT_NAMES = ARM_JOINT_NAMES + ["gripper"]
 
-# Home config (tous les joints a 0, gripper a 50)
-HOME_CONFIG = [0.0] + [0.0] * 5 + [50.0]
+# Offsets de la stratégie pick & place (m)
+PICK_APPROACH_Z = 0.10   # approche au-dessus de la boule
+GRASP_Z = 0.02           # hauteur pince à la saisie (boule r=0.015 posée au sol)
+BALL_LOST_TIMEOUT = 30.0
 
-# Target offset : la pince doit etre au-dessus de la boule (z + 0.05)
-PICK_OFFSET = 0.05
-PLACE_Z = 0.03
+# Point de pose : la drop_box de la scène est en (0.05, -0.25)
+PLACE_XY = (0.05, -0.25)
+PLACE_APPROACH_Z = 0.10
+
+IK_TOLERANCE_M = 0.02
+
+
+def _find_urdf() -> str:
+    """URDF pour ikpy : priorité au package so101_sim installé (pip),
+    fallback sur l'arborescence du dépôt (exécution locale)."""
+    try:
+        from so101_sim import ASSETS_DIR
+        p = Path(ASSETS_DIR) / "so101_new_calib.urdf"
+        if p.exists():
+            return str(p)
+    except ImportError:
+        pass
+    repo = Path(__file__).resolve().parents[4]  # .../ros2_ws/src/so101_brain/so101_brain
+    p = repo / "sim" / "so101_sim" / "assets" / "so101" / "so101_new_calib.urdf"
+    if p.exists():
+        return str(p)
+    raise FileNotFoundError("URDF so101_new_calib.urdf introuvable (so101_sim non installé ?)")
 
 
 class BrainNode(rclpy.node.Node):
-    """Cerveau du bras : IK + pick & place autonome."""
+    """Cerveau du bras : IK + pick & place autonome via /joint_command."""
 
     def __init__(self):
         super().__init__("so101_brain")
-        self._use_sim: bool = self.declare_parameter("use_sim", True).value
 
-        # -- etat interne -----------------------------------------------------
+        # -- état interne -------------------------------------------------------
         self._lock = threading.Lock()
-        self._current_joints = dict.fromkeys(ARM_JOINT_NAMES, 0.0)  # dernier joint_states lu
-        self._ball_pose_3d = None  # derniere position de la boule
+        self._current_rad = dict.fromkeys(ARM_JOINT_NAMES, 0.0)  # /joint_states (rad)
+        self._ball_pose: PoseStamped | None = None
         self._autonomous = False
-        self._autonomous_thread = None
-        self._state = "idle"  # idle, pick, place, error
+        self._autonomous_thread: threading.Thread | None = None
+        self._state = "init"
 
-        # -- IK pre-calcul ----------------------------------------------------
-        self.get_logger().info("Chargement ikpy...")
-        self.get_logger().info("ikpy charge.")
+        # -- IK -----------------------------------------------------------------
+        urdf = _find_urdf()
+        self.get_logger().info(f"Chargement chaîne ikpy : {urdf}")
+        # 7 maillons : [base fixe, 5 joints actifs, gripper_frame fixe]
+        self._chain = ik_chain.Chain.from_urdf_file(
+            urdf, active_links_mask=[False, True, True, True, True, True, False]
+        )
+        self._ik_tol = self.declare_parameter("ik_tolerance", IK_TOLERANCE_M).value
 
-        # -- pubs / subs ------------------------------------------------------
+        # -- pubs / subs ----------------------------------------------------------
+        self._cmd_pub = self.create_publisher(JointState, "joint_command", 10)
         self._state_pub = self.create_publisher(String, "brain_state", 10)
-        self._joint_sub = self.create_subscription(
-            JointState, "joint_states", self._cb_joint_states, 10
-        )
-        self._ball_sub = self.create_subscription(
-            PoseStamped, "ball_position_3d", self._cb_ball, 10
-        )
+        self.create_subscription(JointState, "joint_states", self._cb_joint_states, 10)
+        self.create_subscription(PoseStamped, "ball_position_3d", self._cb_ball, 10)
 
-        # -- services ---------------------------------------------------------
-        self._start_srv = self.create_service(
-            SetBool, "brain/start_autonomous", self._cb_start_autonomous
-        )
-        self._stop_srv = self.create_service(
-            SetBool, "brain/stop_autonomous", self._cb_stop_autonomous
-        )
-        self._go_to_srv = self.create_service(
-            "so101_brain/GoToTarget", self._cb_go_to_target
-        )
+        # -- services ---------------------------------------------------------------
+        self.create_service(GoToTarget, "brain/go_to_target", self._cb_go_to_target)
+        self.create_service(SetBool, "brain/start_autonomous", self._cb_start_autonomous)
+        self.create_service(SetBool, "brain/stop_autonomous", self._cb_stop_autonomous)
 
-        # -- client service vers driver ---------------------------------------
-        self._set_joints_client = self.create_client(
-            "so101_driver/SetJointPositions", "set_joint_positions"
-        )
-        while not self._set_joints_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("En attente du service set_joint_positions du driver...")
-        self.get_logger().info("Service set_joint_positions du driver disponible.")
+        self.create_timer(1.0 / 10.0, self._publish_state)
+        self._set_state("idle")
+        self.get_logger().info("Brain node prêt.")
 
-        # -- types de service charges dynamiquement ---------------------------
-        from rosidl_runtime_py.utilities import get_service
-        self._SetJointPositions = get_service("so101_driver/SetJointPositions")
+    # -- callbacks ------------------------------------------------------------------
 
-        # -- timer pour publication de l'etat ---------------------------------
-        self._pub_timer = self.create_timer(1.0 / 10.0, self._publish_state)
-
-        self._set_state("ready")
-        self.get_logger().info("Brain node pret.")
-
-    # -- callbacks ------------------------------------------------------------
-
-    def _cb_joint_states(self, msg):
-        """Mettre a jour les angles courants."""
+    def _cb_joint_states(self, msg: JointState):
+        """/joint_states est en radians (convention driver/RViz)."""
         with self._lock:
             for name, pos in zip(msg.name, msg.position):
                 if name in ARM_JOINT_NAMES:
-                    self._current_joints[name] = float(pos)
+                    self._current_rad[name] = float(pos)
 
-    def _cb_ball(self, msg):
-        """Mettre a jour la position de la boule."""
+    def _cb_ball(self, msg: PoseStamped):
         with self._lock:
-            self._ball_pose_3d = msg
+            self._ball_pose = msg
+
+    def _cb_go_to_target(self, request, response):
+        """IK vers une position 3D cible, puis publication sur /joint_command."""
+        target = [
+            request.target_pose.pose.position.x,
+            request.target_pose.pose.position.y,
+            request.target_pose.pose.position.z,
+        ]
+        q_sol, err = self._solve_ik(target)
+        if q_sol is None:
+            response.success = False
+            response.message = f"Cible {target} hors espace de travail (erreur IK {err:.3f} m)"
+            self.get_logger().warn(response.message)
+            return response
+
+        self._send_action(self._q_to_action(q_sol))
+        response.success = True
+        response.message = f"IK vers {target} (erreur {err * 1000:.1f} mm)"
+        self.get_logger().info(response.message)
+        return response
 
     def _cb_start_autonomous(self, request, response):
-        """Demarrer le pick & place automatique."""
         if self._autonomous:
             response.success = False
-            response.message = "Deja en mode autonome."
+            response.message = "Déjà en mode autonome."
             return response
         self._autonomous = True
-        self._autonomous_thread = threading.Thread(
-            target=self._autonomous_loop, daemon=True
-        )
+        self._autonomous_thread = threading.Thread(target=self._autonomous_loop, daemon=True)
         self._autonomous_thread.start()
         response.success = True
-        response.message = "Pick & place automatique demarre."
+        response.message = "Pick & place autonome démarré."
         return response
 
     def _cb_stop_autonomous(self, request, response):
-        """Arreter le pick & place automatique."""
         self._autonomous = False
         self._set_state("idle")
         response.success = True
-        response.message = "Mode autonome arrete."
+        response.message = "Mode autonome arrêté."
         return response
 
-    def _cb_go_to_target(self, request, response):
-        """IK vers une position 3D cible."""
-        try:
-            target = [request.target_pose.position.x,
-                      request.target_pose.position.y,
-                      request.target_pose.position.z]
-            q_sol = self._solve_ik(target)
-            angles_deg = np.degrees(q_sol[1:6])
+    # -- IK ------------------------------------------------------------------------
 
-            # Envoyer au driver
-            action = {}
-            for i, j in enumerate(ARM_JOINT_NAMES):
-                action[f"{j}.pos"] = float(angles_deg[i])
-            action["gripper.pos"] = 50.0
-
-            self.get_logger().info(f"IK -> {dict(zip(ARM_JOINT_NAMES, angles_deg))}")
-            self._send_action(action)
-            response.success = True
-            response.message = f"IK vers {target}"
-        except Exception as e:
-            response.success = False
-            response.message = f"Erreur IK : {e}"
-            self.get_logger().error(response.message)
-        return response
-
-    # -- IK -------------------------------------------------------------------
-
-    def _get_initial_position(self):
-        """Retourne le vecteur 7D pour ikpy (seed avec config courante)."""
+    def _seed(self):
+        """Vecteur 7D initial pour ikpy = configuration courante (rad)."""
         with self._lock:
-            current = dict(self._current_joints)
-        # Convertir degres -> radians pour ikpy
-        q_rad = [0.0]  # link fixe 0
-        for j in ARM_JOINT_NAMES:
-            q_rad.append(np.radians(current.get(j, 0.0)))
-        q_rad.append(0.0)  # gripper_frame fixe
-        return q_rad
+            cur = dict(self._current_rad)
+        return [0.0] + [cur[j] for j in ARM_JOINT_NAMES] + [0.0]
 
     def _solve_ik(self, target_position):
-        """Resoudre l'IK numerique avec ikpy."""
-        initial = self._get_initial_position()
-
+        """Retourne (q_sol, erreur) — q_sol=None si la cible est inatteignable."""
+        seed = self._seed()
         try:
-            q_sol = IK_CHAIN.inverse_kinematics(
+            q_sol = self._chain.inverse_kinematics(
                 target_position=target_position,
-                initial_position=initial,
-                orientation_mode="Z",
+                initial_position=seed,
+                orientation_mode="Z",           # pince pointant vers le bas
                 target_orientation=[0, 0, -1],
             )
         except Exception:
-            q_sol = IK_CHAIN.inverse_kinematics(
-                target_position=target_position,
-                initial_position=initial,
+            q_sol = self._chain.inverse_kinematics(
+                target_position=target_position, initial_position=seed
             )
 
-        # Verifier que la solution est dans l'espace de travail
-        fk_result = IK_CHAIN.forward_kinematics(q_sol)
-        fk_pos = fk_result[:3, 3]
-        error = np.linalg.norm(fk_pos - np.array(target_position))
+        fk_pos = self._chain.forward_kinematics(q_sol)[:3, 3]
+        err = float(np.linalg.norm(fk_pos - np.asarray(target_position)))
+        if err > self._ik_tol:
+            return None, err
+        return q_sol, err
 
-        if error > 0.02:  # > 2cm : cible probablement inaccessible
-            self.get_logger().warn(
-                f"IK erreur : {error:.3f}m (seuil 0.02m). Cible {target_position}"
-            )
-            # Retourner quand meme la solution (ikpy retourne le meilleur compromis)
-
-        return q_sol
-
-    def _angles_to_action(self, q_sol):
-        """Converter la solution ikpy (rad, 7D) en action driver (deg, dict)."""
+    def _q_to_action(self, q_sol, gripper_pct=None):
+        """Solution ikpy (rad, 7D) -> action driver (deg + gripper %)."""
         angles_deg = np.degrees(q_sol[1:6])
-        action = {}
-        for i, j in enumerate(ARM_JOINT_NAMES):
-            action[f"{j}.pos"] = float(angles_deg[i])
-        action["gripper.pos"] = 50.0
+        action = {j: float(a) for j, a in zip(ARM_JOINT_NAMES, angles_deg)}
+        if gripper_pct is not None:
+            action["gripper"] = float(gripper_pct)
         return action
 
-    # -- boucle autonome pick & place -----------------------------------------
+    # -- commande ---------------------------------------------------------------------
+
+    def _send_action(self, action: dict, settle: float = 0.0):
+        """Publier une consigne sur /joint_command (deg, gripper 0-100 %).
+
+        Le driver ré-applique la consigne à 50 Hz : publier une fois suffit.
+        `settle` : attente optionnelle de convergence (boucle autonome).
+        """
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = list(action.keys())
+        msg.position = [float(v) for v in action.values()]
+        self._cmd_pub.publish(msg)
+        if settle > 0:
+            time.sleep(settle)
+
+    def _go_home(self, settle=1.5):
+        self._send_action({j: 0.0 for j in ARM_JOINT_NAMES} | {"gripper": 100.0}, settle)
+
+    # -- boucle autonome -----------------------------------------------------------------
 
     def _autonomous_loop(self):
-        """Boucle pick & place infinie."""
-        self.get_logger().info("Boucle autonome demarre.")
+        self.get_logger().info("Boucle autonome démarrée.")
         cycle = 0
         while self._autonomous:
+            cycle += 1
             try:
-                cycle += 1
                 self.get_logger().info(f"Cycle pick & place #{cycle}")
 
-                # -- etape 1 : home ------------------------------------------------
                 self._set_state("home")
-                self._go_to_home()
+                self._go_home()
 
-                # -- etape 2 : au-dessus de la boule -------------------------------
+                # -- localiser la boule ------------------------------------------
+                ball = self._wait_ball()
+                if ball is None:
+                    self.get_logger().warn("Boule non détectée — nouvel essai.")
+                    continue
+                bx, by = ball.pose.position.x, ball.pose.position.y
+
+                # -- approche au-dessus ------------------------------------------
                 self._set_state("approach")
-                if not self._go_over_ball():
-                    self.get_logger().warn("Boule non detectee. Attente...")
-                    self._wait_ball()
+                if not self._ik_move([bx, by, PICK_APPROACH_Z], gripper=100.0, settle=2.0):
                     continue
 
-                # -- etape 3 : descendre vers la boule -----------------------------
+                # -- descente -----------------------------------------------------
                 self._set_state("down_to_ball")
-                self._go_to_ball_surface()
+                if not self._ik_move([bx, by, GRASP_Z], gripper=100.0, settle=1.5):
+                    continue
 
-                # -- etape 4 : fermer gripper --------------------------------------
+                # -- saisie -------------------------------------------------------
                 self._set_state("grasp")
-                self._send_action({"gripper.pos": 0.0})
+                self._send_action({"gripper": 0.0}, settle=1.0)
 
-                # -- etape 5 : remonter --------------------------------------------
+                # -- remontée -----------------------------------------------------
                 self._set_state("lift")
-                lift_pos = {
-                    "shoulder_pan.pos": 0.0,
-                    "shoulder_lift.pos": 15.0,
-                    "elbow_flex.pos": 50.0,
-                    "wrist_flex.pos": -20.0,
-                    "wrist_roll.pos": 0.0,
-                    "gripper.pos": 20.0,
-                }
-                self._send_action(lift_pos)
+                self._ik_move([bx, by, PICK_APPROACH_Z], gripper=0.0, settle=1.5)
 
-                # -- etape 6 : over home -------------------------------------------
+                # -- transport vers la boîte de dépôt -----------------------------
                 self._set_state("transport")
-                self._go_to_home()
+                px, py = PLACE_XY
+                if not self._ik_move([px, py, PLACE_APPROACH_Z], gripper=0.0, settle=2.0):
+                    continue
 
-                # -- etape 7 : over place point ------------------------------------
-                self._set_state("place_approach")
-                place_pos = {
-                    "shoulder_pan.pos": 0.0,
-                    "shoulder_lift.pos": 15.0,
-                    "elbow_flex.pos": 40.0,
-                    "wrist_flex.pos": -30.0,
-                    "wrist_roll.pos": 0.0,
-                    "gripper.pos": 50.0,
-                }
-                self._send_action(place_pos)
-
-                # -- etape 8 : ouvrir gripper (placer) -----------------------------
+                # -- pose ---------------------------------------------------------
                 self._set_state("place")
-                self._send_action({"gripper.pos": 100.0})
+                self._send_action({"gripper": 100.0}, settle=1.0)
 
-                # -- etape 9 : home ------------------------------------------------
                 self._set_state("home")
-                self._go_to_home()
-
-                self.get_logger().info(f"Cycle #{cycle} termine.")
+                self._go_home()
+                self.get_logger().info(f"Cycle #{cycle} terminé.")
 
             except Exception as e:
                 self.get_logger().error(f"Erreur cycle : {e}")
                 self._set_state("error")
+                time.sleep(1.0)
 
-        self.get_logger().info("Boucle autonome arretee.")
+        self._set_state("idle")
+        self.get_logger().info("Boucle autonome arrêtée.")
 
-    # -- methodes d'assistance --------------------------------------------------
-
-    def _go_to_home(self):
-        """Aller a la configuration home."""
-        self._send_action(HOME_CONFIG)
-
-    def _go_over_ball(self):
-        """IK vers au-dessus de la boule."""
-        with self._lock:
-            ball = self._ball_pose_3d
-        if ball is None:
+    def _ik_move(self, target, gripper, settle):
+        """IK + envoi. Retourne False (et repasse idle) si cible inatteignable."""
+        q_sol, err = self._solve_ik(target)
+        if q_sol is None:
+            self.get_logger().warn(
+                f"Cible {np.round(target, 3).tolist()} hors espace de travail "
+                f"(erreur IK {err:.3f} m > {self._ik_tol} m) — retour idle."
+            )
+            self._set_state("idle")
             return False
-
-        target = [
-            ball.pose.position.x,
-            ball.pose.position.y,
-            ball.pose.position.z + PICK_OFFSET,
-        ]
-        q_sol = self._solve_ik(target)
-        action = self._angles_to_action(q_sol)
-        self._send_action(action)
+        self._send_action(self._q_to_action(q_sol, gripper_pct=gripper), settle=settle)
         return True
 
-    def _go_to_ball_surface(self):
-        """IK vers la surface de la boule (z = PLACE_Z)."""
-        with self._lock:
-            ball = self._ball_pose_3d
-        if ball is None:
-            return
-        target = [
-            ball.pose.position.x,
-            ball.pose.position.y,
-            PLACE_Z,
-        ]
-        q_sol = self._solve_ik(target)
-        action = self._angles_to_action(q_sol)
-        self._send_action(action)
-
-    def _wait_ball(self, timeout=30.0):
-        """Attendre que la boule soit detectee."""
-        deadline = self.get_clock().now().nanoseconds / 1e9 + timeout
-        while self._autonomous and (self.get_clock().now().nanoseconds / 1e9 < deadline):
+    def _wait_ball(self, timeout=BALL_LOST_TIMEOUT):
+        """Attendre une détection (le spin tourne dans le thread principal)."""
+        deadline = time.monotonic() + timeout
+        while self._autonomous and time.monotonic() < deadline:
             with self._lock:
-                if self._ball_pose_3d is not None:
-                    return
-            rclpy.spin_once(self, timeout_sec=0.5)
+                if self._ball_pose is not None:
+                    return self._ball_pose
+            time.sleep(0.2)
+        return None
 
-    def _send_action(self, action, steps=100):
-        """Envoyer une action au bras (via driver)."""
-        positions = [0.0] * 6
-        for i, name in enumerate(JOINT_NAMES):
-            key = f"{name}.pos"
-            if key in action:
-                positions[i] = float(action[key])
-            else:
-                with self._lock:
-                    if name in self._current_joints:
-                        positions[i] = self._current_joints[name]
-                    elif name == "gripper":
-                        positions[i] = 50.0
-                    else:
-                        positions[i] = 0.0
-        try:
-            req = self._SetJointPositions.Request()
-            req.positions = positions
-            future = self._set_joints_client.call_async(req)
-            import time as _time
-            while not future.done():
-                _time.sleep(0.01)
-            resp = future.result()
-            if resp.success:
-                self.get_logger().debug(f"Action envoyee: {positions}")
-            else:
-                self.get_logger().warn(f"Action refusee: {resp.message}")
-        except Exception as e:
-            self.get_logger().error(f"Erreur envoi action: {e}")
+    # -- état -----------------------------------------------------------------------------
 
     def _set_state(self, state):
-        """Changer l'etat interne."""
         with self._lock:
             self._state = state
 
     def _publish_state(self):
-        """Publier l'etat courant."""
         with self._lock:
             state = self._state
         msg = String()
@@ -411,7 +327,7 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        if node:
+        if node is not None:
             node.destroy_node()
         rclpy.shutdown()
 

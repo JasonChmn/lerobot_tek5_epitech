@@ -188,8 +188,9 @@ réponse au scan = câblage/alim/ID.
 ### Via ROS2 (une fois le driver_node étudiant écrit)
 
 ```bash
-ros2 topic pub --once /joint_command <type_choisi> "{...shoulder_pan: 30...}"
-ros2 topic echo /joint_states
+ros2 topic pub --once /joint_command sensor_msgs/msg/JointState \
+  "{name: [shoulder_pan], position: [30.0]}"
+ros2 topic echo /joint_states   # positions en radians (convention RViz)
 ```
 
 C'est le test du jalon S2 — identique en sim et en réel par construction.

@@ -1,0 +1,5 @@
+# Amener la pince à une position 3D (repère robot/world) via IK.
+geometry_msgs/PoseStamped target_pose
+---
+bool success
+string message

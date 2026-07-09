@@ -1,16 +1,18 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>so101_brain</name>
-  <version>0.1.0</version>
-  <description>Intelligence du bras — commande IK et boucle pick & place autonome.</description>
+  <version>0.2.0</version>
+  <description>Intelligence du bras — IK (ikpy) et boucle pick &amp; place autonome.
+  Toutes les commandes moteur passent par /joint_command (voir DESIGN.md).</description>
   <maintainer email="tek5@epitech.eu">Tek5 Robotics</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>so101_driver</depend>
+  <depend>so101_interfaces</depend>
 
   <export>
     <build_type>ament_python</build_type>

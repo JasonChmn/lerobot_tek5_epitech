@@ -1,0 +1,7 @@
+# Positionner les 6 joints du SO-ARM101 en une fois.
+# Ordre : shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
+# Unités : degrés pour les 5 joints du bras, 0-100 (%) pour le gripper.
+float64[] positions
+---
+bool success
+string message

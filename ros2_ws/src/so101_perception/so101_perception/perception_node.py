@@ -43,8 +43,8 @@ class PerceptionNode(rclpy.node.Node):
         # -- calibration ------------------------------------------------------
         self._K = None  # intrinseques (3x3)
         self._T_cam_world = None  # extrinseques (4x4)
-        self._K_subscribed = False
-        self._image_subscribed = False
+        self._current_ball_pose = None  # derniere detection (PoseStamped ou None)
+        self._ball_radius = self.declare_parameter("ball_radius", 0.015).value
 
         # -- lire calibration depuis params (publies par driver en sim) -------
         self.declare_parameter("cam_K", [])
@@ -80,9 +80,9 @@ class PerceptionNode(rclpy.node.Node):
         """Recuperer la matrice K."""
         K = np.array(msg.k).reshape(3, 3)
         with self._lock:
+            if self._K is None:
+                self.get_logger().info("Camera intrinsics recue (CameraInfo).")
             self._K = K
-        self._K_subscribed = True
-        self.get_logger().info("Camera intrinsics recue.")
 
     def _cb_image(self, msg):
         """Convertir l'image et lancer la detection."""
@@ -98,7 +98,6 @@ class PerceptionNode(rclpy.node.Node):
         # -- stockage thread-safe ---------------------------------------------
         with self._lock:
             self._current_ball_pose = ball_pos_3d  # PoseStamped ou None
-        self._image_subscribed = True
 
     def _detect_ball(self, cv_image):
         """Segmenter la boule en HSV, trouver centre, projeter en 3D."""
@@ -136,7 +135,11 @@ class PerceptionNode(rclpy.node.Node):
         if self._K is None:
             return None
         K_inv = np.linalg.inv(self._K)
-        ray = K_inv @ np.array([u, v, 1.0])  # rayon normalise
+        ray = K_inv @ np.array([u, v, 1.0])  # rayon pinhole (+z avant, +v bas)
+
+        # Convention camera MuJoCo : x a droite, y VERS LE HAUT, regarde le long
+        # de -z (cf. DESIGN.md). Le rayon pinhole doit donc etre re-exprime :
+        ray = np.array([ray[0], -ray[1], -ray[2]])
 
         # 2. Estimer la profondeur : la boule est sur le plan z=0 (table)
         #    On intersecte le rayon avec le plan z=0 dans le systeme monde
@@ -154,16 +157,16 @@ class PerceptionNode(rclpy.node.Node):
         # Rayon dans le systeme monde
         ray_world = cam_R @ ray
 
-        # Intersection avec le plan z=0 (table)
-        # cam_pos + t * ray_world = (x, y, 0)
-        # => t = -cam_pos[2] / ray_world[2]
+        # Intersection avec le plan du CENTRE de la boule (z = rayon, boule au sol)
+        # cam_pos + t * ray_world = (x, y, ball_radius)
         if abs(ray_world[2]) < 1e-6:
             return None
-        t = -cam_pos[2] / ray_world[2]
+        t = (self._ball_radius - cam_pos[2]) / ray_world[2]
+        if t <= 0:
+            return None  # intersection derriere la camera
 
-        # Position 3D
         pos_world = cam_pos + t * ray_world
-        pos_world[2] = 0.03  # centre de la boule (rayon ~0.03)
+        pos_world[2] = self._ball_radius
 
         # -- construire PoseStamped ------------------------------------------
         pose = PoseStamped()

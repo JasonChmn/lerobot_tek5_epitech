@@ -30,6 +30,16 @@ services:
     networks: [rosnet]
     stdin_open: true
     tty: true
+    # Seul container qui build (un colcon concurrent sur le meme volume = conflits).
+    # perception et viz attendent que install/ soit pret.
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      cd /ros2_ws &&
+      colcon build --symlink-install &&
+      source install/setup.bash &&
+      (ros2 launch so101_driver driver.launch.py &) &&
+      sleep 5 &&
+      ros2 launch so101_brain brain.launch.py"
 
   perception:
     build:
@@ -43,6 +53,11 @@ services:
     networks: [rosnet]
     stdin_open: true
     tty: true
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      until [ -d /ros2_ws/install/so101_perception ]; do echo 'attente build (control)...'; sleep 3; done &&
+      sleep 2 && cd /ros2_ws && source install/setup.bash &&
+      ros2 launch so101_perception perception.launch.py"
 
   # robot_state_publisher : publie /robot_description et les TF depuis
   # /joint_states (fournis par le driver_node étudiant). La visu se fait
@@ -57,9 +72,8 @@ services:
     networks: [rosnet]
     command: >
       bash -lc "source /opt/ros/jazzy/setup.bash &&
-      cd /ros2_ws &&
-      colcon build --packages-select so101_description --symlink-install &&
-      source install/setup.bash &&
+      until [ -d /ros2_ws/install/so101_description ]; do echo 'attente build (control)...'; sleep 3; done &&
+      sleep 2 && cd /ros2_ws && source install/setup.bash &&
       ros2 launch so101_description viz.launch.py"
 
   # Bonus hardware — passthrough /dev. Adapter le port série.
@@ -70,6 +84,14 @@ services:
       - "/dev/ttyACM0:/dev/ttyACM0"
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      cd /ros2_ws &&
+      colcon build --symlink-install &&
+      source install/setup.bash &&
+      (ros2 launch so101_driver driver.launch.py use_sim:=false &) &&
+      sleep 5 &&
+      ros2 launch so101_brain brain.launch.py"
 
 networks:
   rosnet:

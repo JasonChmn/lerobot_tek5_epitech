@@ -39,6 +39,18 @@ Visualisation (RViz depuis le container control) :
 docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && rviz2"
 ```
 
+Bouger un joint via ROS2 (le bras doit suivre dans RViz — jalon S2) :
+
+```bash
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && \
+  source /ros2_ws/install/setup.bash && \
+  ros2 topic pub --once /joint_command sensor_msgs/msg/JointState \
+  '{name: [shoulder_pan], position: [30.0]}'"
+```
+
+Conventions : `/joint_command` en degrés (gripper 0-100 %),
+`/joint_states` en radians (REP-103, requis par robot_state_publisher).
+
 Voir `docs/INSTRUCTION.md` §5 pour la configuration RViz et le dépannage.
 
 ## Bras réel (bonus)
