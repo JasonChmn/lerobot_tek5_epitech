@@ -10,6 +10,7 @@ def generate_launch_description():
         executable="perception",
         name="perception",
         output="screen",
+        respawn=True,
         parameters=[
             {"camera_info_topic": "external_cam/camera_info"},
             {"image_topic": "external_cam/image_raw"},
