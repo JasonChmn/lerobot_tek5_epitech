@@ -30,6 +30,10 @@ Pipfile.lock
 ### Build & Distribution ###
 build/
 dist/
+
+### ROS2 / colcon ###
+ros2_ws/install/
+ros2_ws/log/
 sdist/
 wheels/
 downloads/
