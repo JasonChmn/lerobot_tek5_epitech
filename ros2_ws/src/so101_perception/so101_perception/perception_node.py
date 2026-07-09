@@ -23,6 +23,7 @@ import rclpy
 import rclpy.node
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.srv import GetParameters
 from sensor_msgs.msg import CameraInfo, Image
 
 
@@ -71,7 +72,14 @@ class PerceptionNode(rclpy.node.Node):
             PoseStamped, "ball_position_3d", 10
         )
 
+        # -- param fetch client for driver cam_K / cam_T ----------------------
+        self._param_cli = self.create_client(
+            GetParameters, "/so101_driver/get_parameters"
+        )
+        self._fetch_timer = self.create_timer(1.0, self._fetch_cam_params)
+
         self._pub_timer = self.create_timer(1.0 / 30.0, self._publish_result)
+        self._ball_count = 0
         self.get_logger().info("Perception node pret.")
 
     # -- callbacks -----------------------------------------------------------
@@ -97,7 +105,14 @@ class PerceptionNode(rclpy.node.Node):
 
         # -- stockage thread-safe ---------------------------------------------
         with self._lock:
-            self._current_ball_pose = ball_pos_3d  # PoseStamped ou None
+            self._current_ball_pose = ball_pos_3d
+            if self._ball_count % 30 == 0:
+                self.get_logger().info(
+                    f"image recue (K={'OK' if self._K is not None else 'None'}, "
+                    f"T={'OK' if self._T_cam_world is not None else 'None'}), "
+                    f"detection={'OK' if ball_pos_3d is not None else 'None'}"
+                )
+        self._ball_count += 1
 
     def _detect_ball(self, cv_image):
         """Segmenter la boule en HSV, trouver centre, projeter en 3D."""
@@ -111,12 +126,14 @@ class PerceptionNode(rclpy.node.Node):
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
+            self.get_logger().warn("detect_ball: no contours found")
             return None
 
-        # contour le plus grand (probablement la boule)
         cnt = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(cnt)
-        if area < 100:
+        if self._ball_count % 50 == 0:
+            self.get_logger().info(f"detection: contours={len(contours)}, area={area:.1f}")
+        if area < 50:
             return None
 
         # centre du contour
@@ -185,6 +202,60 @@ class PerceptionNode(rclpy.node.Node):
         if ball_pose is not None:
             ball_pose.header.stamp = self.get_clock().now().to_msg()
             self._ball_pub.publish(ball_pose)
+
+    def _fetch_cam_params(self):
+        """Recuperer cam_K et cam_T depuis le driver (une fois), puis arrete le timer."""
+        with self._lock:
+            if self._K is not None and self._T_cam_world is not None:
+                self._fetch_timer.cancel()
+                return
+
+        if not self._param_cli.service_is_ready():
+            self.get_logger().warn("attente du driver pour cam_K/cam_T...")
+            return
+
+        req = GetParameters.Request(names=["cam_K", "cam_T"])
+
+        def _on_response(future):
+            try:
+                resp = future.result()
+                if not resp.values or len(resp.values) < 2:
+                    self.get_logger().warn(
+                        "Reponse parameters vide, reessai..."
+                    )
+                    return
+
+                k_vals = resp.values[0].double_array_value
+                t_vals = resp.values[1].double_array_value
+
+                if not k_vals or len(k_vals) != 9:
+                    self.get_logger().warn(
+                        f"cam_K invalide ({len(k_vals) if k_vals else 0} floats), reessai..."
+                    )
+                    return
+                if not t_vals or len(t_vals) != 16:
+                    self.get_logger().warn(
+                        f"cam_T invalide ({len(t_vals) if t_vals else 0} floats), reessai..."
+                    )
+                    return
+
+                K = np.array(k_vals, dtype=np.float64).reshape(3, 3)
+                T = np.array(t_vals, dtype=np.float64).reshape(4, 4)
+
+                with self._lock:
+                    self._K = K
+                    self._T_cam_world = T
+
+                self.get_logger().info(
+                    "cam_K / cam_T recus du driver."
+                )
+                self._fetch_timer.cancel()
+
+            except Exception as e:
+                self.get_logger().warn(f"Erreur fetch params: {e}, reessai...")
+
+        future = self._param_cli.call_async(req)
+        future.add_done_callback(_on_response)
 
 
 def main():
