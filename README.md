@@ -36,7 +36,7 @@ python3 -c "from so101_sim import SO101Sim; s=SO101Sim(); s.connect(); print(lis
 Visualisation (RViz depuis le container control) :
 
 ```bash
-docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && rviz2"
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && rviz2"
 ```
 
 Bouger un joint via ROS2 (le bras doit suivre dans RViz — jalon S2) :
@@ -52,6 +52,12 @@ Conventions : `/joint_command` en degrés (gripper 0-100 %),
 `/joint_states` en radians (REP-103, requis par robot_state_publisher).
 
 Voir `docs/INSTRUCTION.md` §5 pour la configuration RViz et le dépannage.
+
+> **Note pédagogique** : aucune config RViz pré-chargée sur la branche étudiante.
+> Les étudiants doivent ajouter eux-mêmes les panneaux TF + RobotModel
+> (`/robot_description`), ce qui force la compréhension des arbres de transformation
+> et du `joint_states` manquant (bras en morceaux = driver non démarré).
+> La config se sauvegarde via `File → Save Config` dans le workspace.
 
 ## Bras réel (bonus)
 
