@@ -58,7 +58,7 @@ GRIPPER_RANGE_RAD = (-0.174533, 1.74533)
 
 CONTROL_HZ = 50.0
 JOINT_STATE_HZ = 30.0
-CAMERA_HZ = 15.0
+CAMERA_HZ = 10.0
 
 
 def _gripper_pct_to_rad(pct: float) -> float:
@@ -77,7 +77,6 @@ class DriverNode(rclpy.node.Node):
         self._arm_lock = threading.Lock()      # accès exclusif au backend
         self._target_lock = threading.Lock()   # consigne courante
         self._target: dict[str, float] = {}    # clés '<joint>.pos', deg / %
-        self._last_image = None                # dernier rendu caméra (sim)
         self._cam_K = None
         self._cam_T = None
 
@@ -168,6 +167,7 @@ class DriverNode(rclpy.node.Node):
         if updates:
             with self._target_lock:
                 self._target.update(updates)
+                self.get_logger().info(f"Consigne recue : {updates}")
 
     def _control_step(self):
         """Ré-appliquer la consigne courante (50 Hz) — fait stepper la sim."""
@@ -192,9 +192,6 @@ class DriverNode(rclpy.node.Node):
             self.get_logger().error(f"get_observation : {e}", throttle_duration_sec=5.0)
             return
 
-        if self._use_sim and "external_cam" in obs:
-            self._last_image = obs["external_cam"]  # réutilisé par _publish_camera
-
         js = JointState()
         js.header.stamp = self.get_clock().now().to_msg()
         js.name = list(JOINT_NAMES)
@@ -203,9 +200,12 @@ class DriverNode(rclpy.node.Node):
         self._joint_pub.publish(js)
 
     def _publish_camera(self):
-        """Publier la dernière image caméra + CameraInfo (sim, 15 Hz)."""
-        img = self._last_image
-        if img is None:
+        """Publier l'image caméra + CameraInfo (sim)."""
+        try:
+            with self._arm_lock:
+                img = self._arm.render_camera()
+        except Exception as e:
+            self.get_logger().error(f"render_camera échouée : {e}", throttle_duration_sec=5.0)
             return
 
         img_msg = Image()
