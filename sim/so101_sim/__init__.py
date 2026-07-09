@@ -33,8 +33,8 @@ class SO101Sim:
         self,
         scene_path: str | Path = DEFAULT_SCENE,
         camera_name: str = "external_cam",
-        camera_width: int = 640,
-        camera_height: int = 480,
+        camera_width: int = 320,
+        camera_height: int = 240,
         sim_dt_per_step: int = 5,
         seed: int | None = None,
     ):
@@ -82,7 +82,10 @@ class SO101Sim:
         self._connected = False
 
     def get_observation(self) -> dict:
-        """Mêmes clés que le bras réel : '<joint>.pos' (+ image caméra en sim)."""
+        """Clés identiques au bras réel ('<joint>.pos').
+        L'image caméra n'est PAS incluse ; les appelants doivent appeler
+        render_camera() explicitement lorsqu'ils en ont besoin.
+        """
         self._require_connected()
         self._step_sim()
         obs = {}
@@ -93,7 +96,6 @@ class SO101Sim:
         obs[f"{GRIPPER}.pos"] = self._gripper_rad_to_pct(
             self.data.qpos[self._joint_qpos_adr[GRIPPER]]
         )
-        obs["external_cam"] = self.render_camera()
         return obs
 
     def send_action(self, action: dict) -> dict:
