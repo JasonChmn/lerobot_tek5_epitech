@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>so101_description</name>
+  <version>1.0.0</version>
+  <description>URDF + meshes du SO-ARM101 et launch de visualisation (robot_state_publisher + foxglove_bridge). Package FOURNI — ne pas modifier.</description>
+  <maintainer email="tek5@epitech.eu">Tek5 Robotics</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

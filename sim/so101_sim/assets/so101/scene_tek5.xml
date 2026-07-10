@@ -1,0 +1,45 @@
+<mujoco model="tek5_pick_and_place">
+    <include file="so101_tek5.xml" />
+
+    <visual>
+        <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+        <global azimuth="160" elevation="-20" offwidth="1280" offheight="720" />
+    </visual>
+
+    <asset>
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+            rgb1="0.25 0.25 0.28" rgb2="0.18 0.18 0.20" markrgb="0.6 0.6 0.6"
+            width="300" height="300" />
+        <material name="groundplane" texture="groundplane" texuniform="true"
+            texrepeat="5 5" reflectance="0.1" />
+        <material name="gold" rgba="0.95 0.78 0.15 1" specular="0.8" shininess="0.9" />
+        <material name="box_mat" rgba="0.35 0.20 0.12 1" />
+    </asset>
+
+    <worldbody>
+        <light pos="0 0 2.5" dir="0 0 -1" directional="true" />
+        <light pos="0.5 0.5 1.5" dir="-0.3 -0.3 -1" diffuse="0.4 0.4 0.4" />
+        <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" />
+
+        <!-- Boule dorée : corps libre, position randomisable via qpos -->
+        <body name="gold_ball" pos="0.25 0.05 0.02">
+            <freejoint name="gold_ball_free" />
+            <geom name="gold_ball_geom" type="sphere" size="0.015" material="gold"
+                density="300" friction="1.0 0.005 0.0001" />
+        </body>
+
+        <!-- Boîte de dépôt -->
+        <body name="drop_box" pos="0.05 -0.25 0.0">
+            <geom type="box" size="0.05 0.05 0.002" pos="0 0 0.002" material="box_mat" />
+            <geom type="box" size="0.05 0.002 0.025" pos="0 0.05 0.025" material="box_mat" />
+            <geom type="box" size="0.05 0.002 0.025" pos="0 -0.05 0.025" material="box_mat" />
+            <geom type="box" size="0.002 0.05 0.025" pos="0.05 0 0.025" material="box_mat" />
+            <geom type="box" size="0.002 0.05 0.025" pos="-0.05 0 0.025" material="box_mat" />
+        </body>
+
+        <!-- Caméra externe fixe (eye-to-hand), pose CONNUE : c'est la TF caméra->monde
+             fournie aux étudiants. Regarde la zone de travail depuis le haut/côté. -->
+        <camera name="external_cam" pos="0.45 0.45 0.55" xyaxes="-0.707 0.707 0 -0.354 -0.354 0.866"
+            fovy="52" />
+    </worldbody>
+</mujoco>
