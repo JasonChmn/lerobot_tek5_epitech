@@ -1,3 +1,4 @@
 - Always read DESIGN.md, README.md, and README_DETAILED.md at the start of each conversation.
+- Run `tree -L 3 -I '__pycache__|build|install|log'` at the start of each conversation to get the project layout.
 - This is a robotics project using ROS2. Everything runs in Docker. See docker compose in docker/.
 - In plan mode: you are FORBIDDEN from editing, writing to, or deleting any files. Only read and plan.

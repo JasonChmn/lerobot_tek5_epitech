@@ -32,12 +32,12 @@ deux containers :
   `use_sim` (défaut `true`). Le reste de votre stack ne doit **jamais**
   savoir lequel tourne.
 - Publie `/joint_states` (`sensor_msgs/JointState`, ≥20 Hz).
-- Publie `/camera/image_raw` (`sensor_msgs/Image`, ~10 Hz, en sim).
+- Publie `/external_cam/image_raw` (`sensor_msgs/Image`, ~10 Hz, en sim).
 - Souscrit `/joint_command` (`sensor_msgs/JointState` : consignes en degrés,
   gripper 0-100).
 
 ### 2. `perception_node` (container perception)
-- Souscrit `/camera/image_raw`.
+- Souscrit `/external_cam/image_raw`.
 - Détecte la boule dorée (HSV, YOLO, ce que vous voulez — justifiez).
 - Calcule sa position 3D dans le **repère robot** et publie
   `/ball_position` (`geometry_msgs/PointStamped`, 5-10 Hz).

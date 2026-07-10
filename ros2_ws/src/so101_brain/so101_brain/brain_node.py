@@ -48,9 +48,12 @@ PICK_APPROACH_Z = 0.10   # approche au-dessus de la boule
 GRASP_Z = 0.02           # hauteur pince à la saisie (boule r=0.015 posée au sol)
 BALL_LOST_TIMEOUT = 30.0
 
-# Point de pose : la drop_box de la scène est en (0.05, -0.25)
-PLACE_XY = (0.05, -0.25)
-PLACE_APPROACH_Z = 0.10
+# Point de pose : fallback si /drop_box_position (publié par le driver) est muet.
+# La drop_box de la scène par défaut est en (0.05, -0.25).
+PLACE_XY_FALLBACK = (0.05, -0.25)
+# z=0.10 avec contrainte -Z stricte = hors workspace ikpy (erreur 31 mm) ;
+# 0.08 passe avec la contrainte, et _solve_ik a un fallback orientation libre.
+PLACE_APPROACH_Z = 0.08
 
 IK_TOLERANCE_M = 0.02
 
@@ -82,6 +85,7 @@ class BrainNode(rclpy.node.Node):
         self._lock = threading.Lock()
         self._current_rad = dict.fromkeys(ARM_JOINT_NAMES, 0.0)  # /joint_states (rad)
         self._ball_pose: PoseStamped | None = None
+        self._drop_box_xy: tuple[float, float] | None = None  # /drop_box_position
         self._autonomous = False
         self._autonomous_thread: threading.Thread | None = None
         self._state = "init"
@@ -100,6 +104,7 @@ class BrainNode(rclpy.node.Node):
         self._state_pub = self.create_publisher(String, "brain_state", 10)
         self.create_subscription(JointState, "joint_states", self._cb_joint_states, 10)
         self.create_subscription(PoseStamped, "ball_position_3d", self._cb_ball, 10)
+        self.create_subscription(PoseStamped, "drop_box_position", self._cb_drop_box, 10)
 
         # -- services ---------------------------------------------------------------
         self.create_service(GoToTarget, "brain/go_to", self._cb_go_to)
@@ -122,6 +127,10 @@ class BrainNode(rclpy.node.Node):
     def _cb_ball(self, msg: PoseStamped):
         with self._lock:
             self._ball_pose = msg
+
+    def _cb_drop_box(self, msg: PoseStamped):
+        with self._lock:
+            self._drop_box_xy = (msg.pose.position.x, msg.pose.position.y)
 
     def _cb_go_to(self, request, response):
         """IK vers une position 3D cible, puis publication sur /joint_command."""
@@ -181,12 +190,22 @@ class BrainNode(rclpy.node.Node):
                 target_orientation=[0, 0, -1],
             )
         except Exception:
-            q_sol = self._chain.inverse_kinematics(
+            q_sol = None
+
+        def _fk_err(q):
+            fk_pos = self._chain.forward_kinematics(q)[:3, 3]
+            return float(np.linalg.norm(fk_pos - np.asarray(target_position)))
+
+        err = _fk_err(q_sol) if q_sol is not None else float("inf")
+        if err > self._ik_tol:
+            # Fallback : orientation libre. La contrainte -Z stricte sort
+            # certaines cibles (ex. transport z>=0.10) du workspace ikpy.
+            q_rel = self._chain.inverse_kinematics(
                 target_position=target_position, initial_position=seed
             )
-
-        fk_pos = self._chain.forward_kinematics(q_sol)[:3, 3]
-        err = float(np.linalg.norm(fk_pos - np.asarray(target_position)))
+            err_rel = _fk_err(q_rel)
+            if err_rel < err:
+                q_sol, err = q_rel, err_rel
         if err > self._ik_tol:
             return None, err
         return q_sol, err
@@ -232,6 +251,10 @@ class BrainNode(rclpy.node.Node):
                 self._go_home()
 
                 # -- localiser la boule ------------------------------------------
+                # Détection FRAÎCHE exigée : la dernière pose peut dater du cycle
+                # précédent (boule déjà déplacée).
+                with self._lock:
+                    self._ball_pose = None
                 ball = self._wait_ball()
                 if ball is None:
                     self.get_logger().warn("Boule non détectée — nouvel essai.")
@@ -258,7 +281,8 @@ class BrainNode(rclpy.node.Node):
 
                 # -- transport vers la boîte de dépôt -----------------------------
                 self._set_state("transport")
-                px, py = PLACE_XY
+                with self._lock:
+                    px, py = self._drop_box_xy or PLACE_XY_FALLBACK
                 if not self._ik_move([px, py, PLACE_APPROACH_Z], gripper=0.0, settle=2.0):
                     continue
 

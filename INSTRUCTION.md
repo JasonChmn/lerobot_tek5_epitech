@@ -1,201 +1,126 @@
-# INSTRUCTION — Lancer et visualiser la simulation
+# INSTRUCTION — Runbook de test (Docker)
 
-Prérequis : **hôte Linux** (natif ou VM), Docker, un serveur X (X11 ou
-Wayland/XWayland — les deux marchent). C'est un module de robotique :
-l'outillage du métier (ROS2, RViz) tourne sous Linux, c'est assumé.
-
-Deux environnements distincts, deux stacks de rendu :
-
-|                    | **Local (hôte)**                    | **Docker (containers)**            |
-|--------------------|-------------------------------------|-------------------------------------|
-| Rendu MuJoCo       | GLFW/EGL natif (driver GPU)         | `MUJOCO_GL=osmesa` (offscreen soft) |
-| Fenêtre interactive| ✅ (`view_live.py`, `mujoco.viewer`) | RViz via X11 forwardé (voir §5)     |
-| Variables env      | **aucune**                          | déjà dans le Dockerfile             |
-| Python             | venv `uv` (voir §1)                 | dans l'image                        |
-| Usage              | instructeur : démos, debug modèle   | étudiants : pipeline complet        |
-
-Règle simple : `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa` c'est **Docker
-uniquement**. En local, ne mets rien — MuJoCo prend ton GPU. Si tu forces
-osmesa en local sans `libosmesa6` installé : crash cryptique
-`'NoneType' ... glGetError`.
+Blocs copy-paste, un bloc = un scénario. **Tout tourne en Docker.**
+Explications, pièges GL, config RViz détaillée et dépannage :
+`README_DETAILED.md` §10 (Annexe). Outils instructeur local (viewer MuJoCo) :
+README_DETAILED §6.
+Prérequis : hôte Linux, Docker.
 
 ---
 
-## 0. Démarrage express (3 terminaux)
-
-Ouvre **3 terminaux séparés**. Les `docker compose exec` ouvrent un nouveau
-shell dans un container déjà lancé — tu peux en ouvrir autant que tu veux
-vers le même service.
-
-**Terminal 1** — stack + contrôle du bras (rester dedans) :
+## 1. From scratch → pick & place qui tourne (le happy path)
 
 ```bash
 cd docker
-xhost +local:docker                          # une fois par session hôte
-docker compose up -d control perception viz
-docker compose exec control bash             # entre dans le container
+docker compose build                          # première fois / deps changées
+xhost +local:docker                           # une fois par session hôte
+docker compose up -d control perception viz   # control : colcon build + driver + brain
+docker compose logs -f control                # attendre "Brain node prêt." (Ctrl-C)
+docker compose exec control bash              # ── entre dans le container ──
 ```
 
-Tu es maintenant dans le container `control`. Tape directement :
+Dans le container (toutes les commandes suivantes) :
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash
+ros2 service call /brain/start std_srvs/srv/Trigger
+ros2 topic echo /brain_state
+# attendu : home → approach → down_to_ball → grasp → lift → transport → place → home (cycle)
+ros2 service call /brain/stop std_srvs/srv/Trigger
+```
+
+La démo se regarde dans **RViz** (bloc 2) : bras qui bouge + flux caméra.
+
+## 2. RViz (nouveau terminal, sur l'hôte)
+
+```bash
+cd docker
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && \
+  source /ros2_ws/install/setup.bash && rviz2 -d /ros2_ws/tek5_prof.rviz"
+# config préchargée (RobotModel + TF + Image). Sans -d : RViz vierge (cf. §10.2).
+# fenêtre noire / crash GL → préfixer : LIBGL_ALWAYS_SOFTWARE=1 rviz2 -d ...
+```
+
+Config minimale : Fixed Frame `base_link` · Add RobotModel
+(`/robot_description`) · Add Image (`/external_cam/image_raw`).
+Détail pas-à-pas + Save Config : README_DETAILED §10.2.
+
+## 3. Tests unitaires du pipeline (dans le container control)
+
+```bash
+# bouger un joint (jalon S2) :
+ros2 topic pub --once /joint_command sensor_msgs/msg/JointState \
+  "{name: [shoulder_pan], position: [30.0]}"
+ros2 topic echo /joint_states --once            # radians
+
+# la perception voit la boule ?
+ros2 topic echo /ball_position_3d --once
+
+# IK vers une cible (jalon S4, sans boucle) :
+ros2 service call /brain/go_to so101_interfaces/srv/GoToTarget \
+  "{target_pose: {pose: {position: {x: 0.25, y: 0.05, z: 0.10}}}}"
+
+# jog moteurs :
 python3 /opt/so101/scripts/jog.py status
-python3 /opt/so101/scripts/jog.py shoulder_pan 30
+python3 /opt/so101/scripts/jog.py sweep elbow_flex
 ```
 
-Ce terminal reste ouvert pour toutes tes commandes `jog.py`.
+## 4. Pick & place standalone (dans le container, sans ROS2)
 
-**Terminal 2** — RViz (sur l'hôte, nouveau terminal) :
+Solution de référence directe (SO101Sim + ikpy, sans le pipeline ROS2).
+Vérité terrain autorisée : démo instructeur hors pipeline.
+
+```bash
+docker compose exec control bash -lc "cd /opt/so101 && \
+  python3 scripts/demo_pick_place.py --no-frames"           # verdict en console
+docker compose exec control bash -lc "cd /opt/so101 && \
+  python3 scripts/demo_pick_place.py --seed 3 --outdir /ros2_ws/demo_frames"  # frames récupérables
+# affiche l'erreur IK par waypoint + verdict (distance boule↔boîte < 60 mm)
+```
+
+## 5. Smoke test image (dans le container)
+
+```bash
+docker compose exec control bash -lc \
+  "python3 /opt/so101/scripts/demo_sim.py /ros2_ws/sortie.png"
+# une image écrite dans ros2_ws/ (visible sur l'hôte via le volume) = sim OK
+```
+
+## 6. Rebuild après modif de code
 
 ```bash
 cd docker
-docker compose exec control bash -lc "LIBGL_ALWAYS_SOFTWARE=1 && source /opt/ros/jazzy/setup.bash && rviz2"
+docker compose restart control    # re-exécute colcon build + relance driver/brain
 ```
 
-La fenêtre RViz s'ouvre sur ton bureau. Configure une fois (voir §6), puis
-laisse tourner pendant que tu tapes des commandes dans le Terminal 1 — le
-bras doit bouger dans RViz.
-
-**Terminal 3** — perception (sur l'hôte, nouveau terminal) :
+## 7. Bras réel (bonus)
 
 ```bash
 cd docker
-docker compose exec perception bash
+# identifier le port sur l'hôte : ls /dev/ttyACM*
+docker compose --profile real up -d control-real
+# scan / calibration / jog, dans le container real :
+docker compose exec control-real bash -lc \
+  "python3 /opt/so101/scripts/jog.py --real --port /dev/ttyACM0 scan"       # 6 moteurs, IDs 1-6
+docker compose exec control-real bash -lc \
+  "python3 /opt/so101/scripts/calibrate_real.py /dev/ttyACM0 tek5_arm"      # première utilisation
+docker compose exec control-real bash -lc \
+  "python3 /opt/so101/scripts/jog.py --real shoulder_pan 20"
 ```
 
-Résumé : 1 terminal = 1 shell = soit hôte, soit dans un container.
+## 8. Nettoyage
+
+```bash
+sudo rm -rf ros2_ws/build ros2_ws/install ros2_ws/log   # créés root par le container
+```
 
 ---
 
-## 1. Setup local (une fois)
+## Si ça casse
 
-```bash
-uv venv ~/.venvs/tek5 && source ~/.venvs/tek5/bin/activate
-uv pip install mujoco opencv-python
-```
-
-(`opencv-python` complet, pas headless : nécessaire pour les fenêtres de
-`view_live.py --cam`.)
-
-## 2. Local — smoke test image
-
-```bash
-python3 scripts/demo_sim.py sortie.png
-```
-
-Rend la caméra externe après 200 steps + imprime la vérité terrain de la
-boule. Si une image sort, la sim est fonctionnelle.
-
-## 3. Local — visu live interactive
-
-### 3a. Demo - Bras animé, physique pilotée (recommandé)
-
-```bash
-python3 scripts/view_live.py --seconds 60
-python3 scripts/view_live.py --cam    # + fenêtre OpenCV caméra externe
-```
-
-Viewer MuJoCo natif (orbite clic droit, zoom molette, double-clic sur un
-corps + Ctrl+drag pour le perturber) pendant que `SO101Sim` exécute une
-trajectoire de démo via la même API `send_action` que le bras réel. `--cam`
-montre en parallèle exactement ce que verront les étudiants.
-
-### 3b. Scène statique seule (inspection du modèle)
-
-```bash
-python3 -m mujoco.viewer --mjcf sim/so101_sim/assets/so101/scene_tek5.xml
-```
-
-Sliders des actuateurs dans le panneau de droite, mais aucun contrôleur.
-
-### 3c. (optionnel) Tester le chemin de rendu Docker en local
-
-```bash
-sudo apt install libosmesa6
-MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python3 scripts/demo_sim.py sortie.png
-```
-
-Utile uniquement pour reproduire le comportement du container hors Docker.
-
----
-
-## 4. Docker — smoke test image
-
-```bash
-cd docker
-docker compose up -d control
-docker compose exec control \
-  bash -lc "cd /opt/so101 && python3 /ros2_ws/../scripts/demo_sim.py /tmp/sortie.png"
-```
-
-Les variables `MUJOCO_GL`/`PYOPENGL_PLATFORM` sont dans l'image, rien à
-passer. (Adapter le chemin du script selon ton montage ; le point testé est
-que le rendu OSMesa produit une image.)
-
-## 5. Docker — visualisation RViz (chemin étudiant officiel)
-
-RViz s'exécute **dans le container control** avec la fenêtre forwardée en
-X11 vers l'hôte. Avantage décisif : RViz est un nœud ROS2 sur le réseau DDS
-interne du compose — il voit tous les topics nativement, aucun bricolage
-réseau. Le service `viz` fait tourner `robot_state_publisher` (URDF du
-package fourni `so101_description`).
-
-```bash
-cd docker
-xhost +local:docker        # une fois par session, sur l'hôte
-docker compose up -d control viz
-docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && rviz2"
-```
-
-Configuration RViz (une fois, puis File → Save Config) :
-1. **Global Options → Fixed Frame : `base_link`**
-2. **Add → RobotModel**, puis dans ses propriétés :
-   **Description Topic : `/robot_description`**
-3. **Add → TF** (facultatif : réduire Marker Scale à ~0.2)
-4. **Add → Image → Topic : `/camera/image_raw`** (une fois le driver_node actif)
-5. La boule : **Add → Marker** sur le topic publié par votre perception.
-
-Smoke test sans code étudiant (joints figés à zéro) :
-
-```bash
-cd docker
-docker compose run --rm viz bash -lc \
-  "source /opt/ros/jazzy/setup.bash && cd /ros2_ws && \
-    colcon build --packages-select so101_description --symlink-install && \
-    source install/setup.bash && \
-    ros2 launch so101_description viz.launch.py demo:=true"
-```
-
-**Comportement attendu** : sans nœud publiant `/joint_states`, le bras
-apparaît "en morceaux" dans RViz (TF des joints inexistant, erreurs sur le
-RobotModel). C'est le contrat : le `driver_node` étudiant publie
-`/joint_states` depuis `get_observation()` — livrable du jalon S2. La boule
-n'apparaît que si la perception la publie (Marker) : la visu montre ce que
-le code étudiant voit, pas la vérité terrain.
-
-### Dépannage affichage
-
-| Symptôme | Cause | Fix |
-|---|---|---|
-| `could not connect to display` | xhost pas fait / DISPLAY vide | `xhost +local:docker` sur l'hôte, relancer |
-| Fenêtre noire ou crash GL | pas d'accélération GPU dans le container | `LIBGL_ALWAYS_SOFTWARE=1 rviz2` (llvmpipe, suffisant pour ce projet) |
-| VM très lente | accélération 3D VM désactivée | activer la 3D dans la VM, sinon fallback ci-dessus |
-
-## 6. Foxglove (bonus, non supporté)
-
-Foxglove Studio peut se connecter à un `foxglove_bridge` ajouté manuellement.
-Non documenté, non supporté : des incompatibilités bridge/client ont été
-constatées (bras "en morceaux" alors que les TF sont corrects). RViz est la
-voie officielle.
-
----
-
-## Récap
-
-| Besoin                          | Commande                              | Où          |
-|---------------------------------|---------------------------------------|-------------|
-| Smoke test sim                  | `demo_sim.py` → PNG                   | local/Docker|
-| Voir le robot bouger en live    | `view_live.py` (MuJoCo natif)         | local       |
-| Inspecter le modèle MJCF        | `python3 -m mujoco.viewer`            | local       |
-| Workflow étudiant (3D + image)  | `rviz2` dans control (X11)            | Docker      |
+| Symptôme | Voir |
+|---|---|
+| `could not connect to display` / fenêtre noire RViz | README_DETAILED §10.2 |
+| `/brain_state` bloqué sur `home` (pas de détection) | `ros2 topic echo /ball_position_3d` + logs perception |
+| retour `idle` + warn IK | cible hors workspace, erreur FK dans les logs |
+| bras immobile / en morceaux dans RViz | driver pas lancé ou build raté : `docker compose logs control` |

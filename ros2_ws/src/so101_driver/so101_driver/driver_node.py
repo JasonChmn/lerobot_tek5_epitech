@@ -12,8 +12,8 @@ Topics :
         position = RADIANS (convention ROS/REP-103 — requis par
         robot_state_publisher, donc par RViz). Gripper : % converti en rad
         via les limites URDF.
-  Pub : /external_cam/image_raw   (sensor_msgs/Image, 15 Hz, sim uniquement)
-  Pub : /external_cam/camera_info (sensor_msgs/CameraInfo, 15 Hz, sim uniquement)
+  Pub : /external_cam/image_raw   (sensor_msgs/Image, 10 Hz, sim uniquement)
+  Pub : /external_cam/camera_info (sensor_msgs/CameraInfo, 10 Hz, sim uniquement)
 
 Services :
   /driver/set_joints (so101_interfaces/SetJointPositions) :

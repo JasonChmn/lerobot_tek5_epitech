@@ -78,7 +78,7 @@ class PerceptionNode(rclpy.node.Node):
         )
         self._fetch_timer = self.create_timer(1.0, self._fetch_cam_params)
 
-        self._pub_timer = self.create_timer(1.0 / 30.0, self._publish_result)
+        self._pub_timer = self.create_timer(1.0 / 10.0, self._publish_result)  # 10 Hz — spec SUJET (5-10 Hz)
         self._ball_count = 0
         self.get_logger().info("Perception node pret.")
 

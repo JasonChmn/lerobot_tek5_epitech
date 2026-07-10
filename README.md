@@ -13,7 +13,7 @@ sim/                Jumeau numérique MuJoCo (SO101Sim, même API que le driver 
 docker/             Images control + perception, docker-compose (réseau DDS partagé)
 ros2_ws/            Workspace étudiant (contient un package d'exemple)
 docs/               SUJET.md (sujet étudiant) · README_IK.md (guide IK/ikpy)
-scripts/            Démos et outils instructeur
+scripts/            Démos et outils instructeur (demo_pick_place.py = pick & place complet)
 
 ## Démarrage rapide
 
@@ -21,11 +21,12 @@ scripts/            Démos et outils instructeur
 cd docker
 docker compose build
 xhost +local:docker                      # accès X11 (RViz)
-docker compose up -d control perception viz
-docker compose exec control bash    # terminal 1
-docker compose exec perception bash # terminal 2
-# dans chaque : cd /ros2_ws && colcon build && source install/setup.bash
+docker compose up -d control perception viz   # control : colcon build + driver + brain au boot
+docker compose logs -f control                # attendre "Brain node prêt." (Ctrl-C)
+docker compose exec control bash              # shell dans le container
 ```
+
+Tout tourne en Docker. Voir `INSTRUCTION.md` pour le runbook de test complet.
 
 Test de la sim sans ROS2 (dans le container control) :
 
@@ -36,7 +37,8 @@ python3 -c "from so101_sim import SO101Sim; s=SO101Sim(); s.connect(); print(lis
 Visualisation (RViz depuis le container control) :
 
 ```bash
-docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && rviz2"
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && \
+  source /ros2_ws/install/setup.bash && rviz2 -d /ros2_ws/tek5_prof.rviz"
 ```
 
 Bouger un joint via ROS2 (le bras doit suivre dans RViz — jalon S2) :
@@ -51,7 +53,24 @@ docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && \
 Conventions : `/joint_command` en degrés (gripper 0-100 %),
 `/joint_states` en radians (REP-103, requis par robot_state_publisher).
 
-Voir `docs/INSTRUCTION.md` §5 pour la configuration RViz et le dépannage.
+## Démo pick & place
+
+Solution de référence bout-en-bout (instructeur) :
+
+```bash
+# Pipeline ROS2 complet (la démo se regarde dans RViz) :
+docker compose exec control bash -lc "source /opt/ros/jazzy/setup.bash && \
+  source /ros2_ws/install/setup.bash && \
+  ros2 service call /brain/start std_srvs/srv/Trigger"
+# arrêt : ros2 service call /brain/stop std_srvs/srv/Trigger
+# suivi : ros2 topic echo /brain_state
+
+# Standalone sans ROS2 (SO101Sim + ikpy, dans le container) :
+docker compose exec control bash -lc "cd /opt/so101 && \
+  python3 scripts/demo_pick_place.py --no-frames"
+```
+
+Voir `INSTRUCTION.md` (runbook) et `README_DETAILED.md` §10 (config RViz pas-à-pas, dépannage).
 
 > **Note pédagogique** : aucune config RViz pré-chargée sur la branche étudiante.
 > Les étudiants doivent ajouter eux-mêmes les panneaux TF + RobotModel

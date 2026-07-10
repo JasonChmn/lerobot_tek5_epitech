@@ -1,5 +1,0 @@
-# Positionner les 6 joints du SO-ARM101 en une fois
-float64[] positions
----
-bool success
-string message

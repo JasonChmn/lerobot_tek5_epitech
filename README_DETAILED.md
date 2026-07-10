@@ -2,7 +2,8 @@
 
 Document instructeur. Synthèse de toutes les décisions, de ce qui est
 construit et validé, de ce qui reste à faire, et des commandes de test.
-Complète `INSTRUCTION.md` (visu/lancement) et `docs/SUJET.md` (côté étudiant).
+Complète `INSTRUCTION.md` (runbook : commandes de test copy-paste) et
+`docs/SUJET.md` (côté étudiant).
 
 ---
 
@@ -43,7 +44,11 @@ ros2_ws/src/
                       (robot_state_publisher, arg demo:=) — package FOURNI
 scripts/
   demo_sim.py         smoke test : rend une image caméra
+  demo_pick_place.py  démo instructeur : pick & place complet standalone
+                      (SO101Sim + ikpy, vérité terrain autorisée hors pipeline)
   view_live.py        viewer MuJoCo natif + trajectoire démo (local only)
+  decimate_meshes.py  décimation des STL (160K→12K verts, perf OSMesa) — one-shot,
+                      déjà appliqué aux meshes du repo
   jog.py              test moteur unifié sim/réel (voir §6)
   calibrate_real.py   calibration du bras physique (procédure LeRobot)
 docs/SUJET.md         contrat étudiant : 3 nœuds (driver/perception/brain), topics,
@@ -75,6 +80,14 @@ uniquement via `/joint_command`.
   Dockerfiles. Étudiants YOLO : contraintes dans la même commande pip
   (avertissement dans le sujet, commande volontairement non fournie ;
   alternative valorisée : export ONNX + onnxruntime).
+- **Fix IK transport (09/07)** : avec contrainte d'orientation −Z stricte,
+  ikpy ne peut pas atteindre la drop_box à z=0.10 (erreur FK 31 mm > tol 2 cm)
+  → la boucle autonome avortait au transport à chaque cycle. Corrigé :
+  `PLACE_APPROACH_Z=0.08` (15 mm, dans la tolérance) + fallback orientation
+  libre dans `_solve_ik` quand la solution contrainte sort de la tolérance.
+  Le brain lit désormais la position de dépôt sur `/drop_box_position`
+  (publié par le driver) au lieu d'une constante, et exige une détection
+  boule fraîche à chaque cycle (pose remise à None avant `_wait_ball`).
 - **Fix rendu offscreen** : `PYOPENGL_PLATFORM=osmesa` requis en plus de
   `MUJOCO_GL=osmesa` (PyOpenGL récents) — dans le Dockerfile. Règle : ces
   variables sont **Docker only**, en local aucune variable (GLFW/EGL natif).
@@ -119,7 +132,8 @@ susceptible de se recasser à chaque mise à jour du client chez 15 campus,
 n'a pas sa place sur le chemin critique du module. Foxglove n'est plus
 mentionné aux étudiants ; RViz est le seul chemin documenté et supporté.
 
-**Viewer MuJoCo natif** (`view_live.py`) : local, instructeur, inchangé.
+**Viewer MuJoCo natif** (`view_live.py`, `mujoco.viewer`) : outil instructeur
+LOCAL uniquement — voir §6, sous-section « Outils instructeur (local) ».
 
 ## 6. Tester les moteurs — sim vs réel
 
@@ -150,40 +164,65 @@ collisions bras-table — `shoulder_lift`/`elbow_flex` à forte amplitude
 peuvent planter la pince dans le support. Rester dans la zone de test
 conseillée tant que la géométrie n'est pas maîtrisée.
 
-### En simulation (local, venv uv ; ou dans le container control)
+### En simulation (dans le container control)
 
 ```bash
-python3 scripts/jog.py status              # positions courantes
-python3 scripts/jog.py shoulder_pan 30     # consigne un joint, vérifie la lecture
-python3 scripts/jog.py sweep elbow_flex    # aller-retour −30/+30/0
-python3 scripts/jog.py sweep gripper       # 20/80/50
-python3 scripts/jog.py zero                # tout à zéro, gripper 50
+docker compose exec control bash -lc "python3 /opt/so101/scripts/jog.py status"
+docker compose exec control bash -lc "python3 /opt/so101/scripts/jog.py shoulder_pan 30"
+docker compose exec control bash -lc "python3 /opt/so101/scripts/jog.py sweep elbow_flex"
+docker compose exec control bash -lc "python3 /opt/so101/scripts/jog.py sweep gripper"
+docker compose exec control bash -lc "python3 /opt/so101/scripts/jog.py zero"
 ```
 
-### Sur le bras réel (hôte Linux, bras sur USB)
+### Sur le bras réel (container control-real, bras sur USB)
 
 ```bash
-# 0. installer le core en local (une fois) :
-uv pip install -e core/lerobot_min
+cd docker
+docker compose --profile real up -d control-real   # passthrough /dev/ttyACM0
 
 # 1. le bus répond ? scan des IDs Feetech (attendu : 6 moteurs, IDs 1-6)
-python3 scripts/jog.py --real --port /dev/ttyACM0 scan
+docker compose exec control-real bash -lc \
+  "python3 /opt/so101/scripts/jog.py --real --port /dev/ttyACM0 scan"
 
 # 2. première utilisation (ou après démontage) : calibration interactive
-python3 scripts/calibrate_real.py /dev/ttyACM0 tek5_arm
-#    → stockée dans ~/.cache/tek5_robotics/calibration/
+docker compose exec control-real bash -lc \
+  "python3 /opt/so101/scripts/calibrate_real.py /dev/ttyACM0 tek5_arm"
 
 # 3. mêmes commandes qu'en sim, avec --real :
-python3 scripts/jog.py --real status
-python3 scripts/jog.py --real shoulder_pan 20
-python3 scripts/jog.py --real sweep wrist_roll
-python3 scripts/jog.py --real zero
+docker compose exec control-real bash -lc "python3 /opt/so101/scripts/jog.py --real status"
+docker compose exec control-real bash -lc "python3 /opt/so101/scripts/jog.py --real shoulder_pan 20"
+docker compose exec control-real bash -lc "python3 /opt/so101/scripts/jog.py --real sweep wrist_roll"
 ```
 
 Conseils réel : commencer par des consignes **faibles** (±20°), zone
 dégagée, gripper d'abord (aucun risque de collision). `consigne ≈ lue` à
 1-2° près = servo OK ; écart constant = calibration à refaire ; pas de
 réponse au scan = câblage/alim/ID.
+
+### Outils instructeur — LOCAL uniquement (hors Docker)
+
+`view_live.py` et `mujoco.viewer` ouvrent une **fenêtre MuJoCo interactive**
+(GLFW/EGL, GPU de l'hôte). Ils ne tournent **pas** en Docker (le container est
+en OSMesa offscreen, sans fenêtre) et ne sont **pas** sur le chemin étudiant.
+
+Point important : ils instancient une **sim séparée** du pipeline Docker — ce
+n'est PAS la même simulation. On ne peut donc PAS y regarder la démo pick &
+place (qui vit dans le container). Usage réel : inspecter le *modèle*
+(géométrie, joints, butées, perturbations manuelles) hors pipeline. Pour voir
+la démo, c'est RViz (§10.2).
+
+```bash
+# setup local une fois :
+uv venv ~/.venvs/tek5 && source ~/.venvs/tek5/bin/activate
+uv pip install mujoco opencv-python
+
+python3 scripts/view_live.py --seconds 60     # bras animé (trajectoire démo interne)
+python3 scripts/view_live.py --cam            # + fenêtre OpenCV caméra externe
+python3 -m mujoco.viewer --mjcf sim/so101_sim/assets/so101/scene_tek5.xml  # modèle statique
+```
+
+En local, **aucune** variable d'environnement (MuJoCo prend le GPU). Ne jamais
+forcer `MUJOCO_GL=osmesa` en local → crash `'NoneType' ... glGetError`.
 
 ### Via ROS2 (une fois le driver_node étudiant écrit)
 
@@ -195,13 +234,13 @@ ros2 topic echo /joint_states   # positions en radians (convention RViz)
 
 C'est le test du jalon S2 — identique en sim et en réel par construction.
 
-## 7. Nettoyage repo (constaté dans le zip du 07/07)
+## 7. Nettoyage repo
 
-- [ ] **Supprimer `Dockerfile.control` à la racine** — doublon obsolète
-      (sans les paquets viz) de `docker/Dockerfile.control`.
-- [ ] **Gitignorer les artefacts colcon** : `ros2_ws/build/`,
-      `ros2_ws/install/`, `ros2_ws/log/` sont commités.
-- [ ] `__pycache__/` au passage.
+- [x] `Dockerfile.control` racine supprimé (doublon de `docker/`).
+- [x] Artefacts colcon purgés (`ros2_ws/build|install|log`, `__pycache__`,
+      `core/lerobot_min/build`) — reste à les gitignorer.
+- [x] Doublons srv supprimés (`so101_brain/srv/`, `so101_driver/srv/` —
+      les définitions vivent dans `so101_interfaces`).
 - [ ] Vider `~/.local/share/Trash` des anciennes copies du repo
       (`lerobot_tek5_epitech`, `tek5_viz_delta*`) — source de confusion
       constatée lors du debug Foxglove (containers pilotés en croisé).
@@ -245,3 +284,76 @@ C'est le test du jalon S2 — identique en sim et en réel par construction.
 - **S4** : IK fonctionnelle, erreur < 1 cm, pince commandable.
 - **S7** : pick & place complet, boule randomisée, 3 essais consécutifs.
 - **Bonus** : même code, `use_sim:=false`, bras physique.
+
+## 10. Annexe — environnement, RViz pas-à-pas, dépannage
+
+(Contenu de référence extrait d'INSTRUCTION.md, devenu runbook pur.)
+
+### 10.1 Deux environnements, deux stacks de rendu
+
+|                    | **Local (hôte)**                    | **Docker (containers)**            |
+|--------------------|-------------------------------------|-------------------------------------|
+| Rendu MuJoCo       | GLFW/EGL natif (driver GPU)         | `MUJOCO_GL=osmesa` (offscreen soft) |
+| Fenêtre interactive| `view_live.py`, `mujoco.viewer`     | RViz via X11 forwardé               |
+| Variables env      | **aucune**                          | déjà dans le Dockerfile             |
+| Python             | venv `uv`                           | dans l'image                        |
+| Usage              | instructeur SEULEMENT : debug modèle (§6) | tout le reste : pipeline, démo, tests |
+
+Règle : `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa` c'est **Docker
+uniquement**. En local, ne rien mettre — MuJoCo prend le GPU. Forcer osmesa
+en local sans `libosmesa6` : crash cryptique `'NoneType' ... glGetError`.
+Tester le chemin de rendu Docker en local (rarement utile) :
+`sudo apt install libosmesa6` puis préfixer `demo_sim.py` avec les deux
+variables.
+
+Terminaux : `docker compose exec <service> bash` ouvre un nouveau shell dans
+un container déjà lancé — en ouvrir autant que nécessaire. 1 terminal =
+1 shell = soit hôte, soit container.
+
+### 10.2 RViz — configuration pas-à-pas et dépannage
+
+Une fois (puis **File → Save Config** dans le workspace) :
+1. **Global Options → Fixed Frame : `base_link`**
+2. **Add → RobotModel** → Description Topic : `/robot_description`
+3. **Add → TF** (facultatif : Marker Scale ~0.2, sinon illisible sur un bras
+   de 30 cm)
+4. **Add → Image** → Topic : `/external_cam/image_raw` (driver actif)
+5. La boule : **Add → Marker** sur le topic publié par la perception
+   étudiante — la visu montre ce que le code voit, pas la vérité terrain.
+
+Smoke test sans code étudiant (joints figés à zéro) :
+
+```bash
+cd docker
+docker compose run --rm viz bash -lc \
+  "source /opt/ros/jazzy/setup.bash && cd /ros2_ws && \
+    colcon build --packages-select so101_description --symlink-install && \
+    source install/setup.bash && \
+    ros2 launch so101_description viz.launch.py demo:=true"
+```
+
+Comportement attendu sans `/joint_states` : bras "en morceaux" + erreurs
+RobotModel — c'est le contrat du jalon S2 (le driver_node étudiant doit les
+publier). Le RobotModel lit l'URDF → bras jaune (le recolorage gris n'existe
+que dans le MJCF sim), sans conséquence.
+
+| Symptôme | Cause | Fix |
+|---|---|---|
+| `could not connect to display` | xhost pas fait / DISPLAY vide | `xhost +local:docker` sur l'hôte, relancer |
+| Fenêtre noire ou crash GL | pas d'accélération GPU dans le container | `LIBGL_ALWAYS_SOFTWARE=1 rviz2` (llvmpipe, suffisant) |
+| VM très lente | 3D VM désactivée | activer la 3D, sinon fallback ci-dessus |
+
+### 10.3 Docker — détail du lancement
+
+Le service `control` est le seul à faire `colcon build` (un colcon
+concurrent sur le même volume = conflits) ; `perception` et `viz` attendent
+`install/`. `control` lance ensuite `driver.launch.py` puis
+`brain.launch.py`. Le smoke test image dans Docker :
+
+```bash
+docker compose exec control \
+  bash -lc "python3 /opt/so101/scripts/demo_sim.py /tmp/sortie.png"
+```
+
+Les artefacts `ros2_ws/{build,install,log}` sont créés **root** par le
+container sur le volume monté → `sudo rm -rf` pour purger (gitignorés).

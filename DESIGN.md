@@ -41,13 +41,16 @@ disconnect()
 ## 3. Architecture ROS 2
 
 ```text
-                         /camera/image
-┌────────────────┐ -------------------------> ┌────────────────┐
-│ perception     │                            │ brain          │
-│ (Docker)       │                            │                │
-└────────────────┘                            └────────────────┘
+        /external_cam/image_raw
+        /external_cam/camera_info          /ball_position_3d
+┌──────────┐ ────────────────► ┌────────────────┐ ────────► ┌────────────────┐
+│ driver   │                   │ perception     │           │ brain          │
+│          │                   │ (HSV + 3D)     │           │ (IK ikpy)      │
+└──────────┘                   └────────────────┘           └────────────────┘
+     ▲                                                              |
+     |                          /joint_command                      |
+     └──────────────────────────────────────────────────────────────┘
                                                       |
-                                                      | /joint_command
                                                       v
                                           ┌──────────────────────────┐
                                           │ driver                   │
@@ -72,7 +75,7 @@ disconnect()
 
 ### driver
 
-Le **driver** est le seul nœud qui communique avec le backend (simulation ou robot réel).
+Le **driver** est le seul nœud qui communique avec le backend (simulation Mujoco ou robot réel SO101Follower).
 
 À chaque cycle :
 
@@ -87,20 +90,36 @@ Le **driver** est le seul nœud qui communique avec le backend (simulation ou ro
 
 Le backend (**MuJoCo** ou **SO101Follower**) **ne publie jamais directement de topics ROS**. Il fournit uniquement une API (`send_action()` / `get_observation()`) utilisée par le driver.
 
+En sim, le driver publie aussi `/external_cam/image_raw` + `/external_cam/camera_info`
+(10 Hz) et `/drop_box_position` (PoseStamped, 10 Hz), et expose la calibration
+caméra via les paramètres ROS 2 `cam_K` (3×3) et `cam_T` (4×4, caméra→monde).
+
 ### perception
 
-- Capture les images de la caméra.
-- Détecte la boule (HSV).
-- Publie `/camera/image`.
-- Fréquence : **5 à 10 Hz**.
+- Souscrit à `/external_cam/image_raw` (+ `camera_info` / paramètres `cam_K`,
+  `cam_T` du driver pour la calibration).
+- Détection HSV de la boule dorée.
+- Projection pixel → position 3D (K, T, intersection au plan z = rayon boule,
+  convention caméra MuJoCo : regard selon **−Z**).
+- Publie `/ball_position_3d` (geometry_msgs/PoseStamped, repère `world`).
+- Fréquence cible : **5 à 10 Hz**.
 
 ### brain
 
-- Souscrit à `/camera/image`.
-- Détection HSV.
-- Projection pixel → position 3D (K, T, plan du sol).
-- Résolution de l'IK (`ikpy`).
+- Souscrit à `/joint_states` (seed IK), `/ball_position_3d` et
+  `/drop_box_position`.
+- Résolution de l'IK (`ikpy`, orientation pince vers le bas −Z, fallback
+  orientation libre si la contrainte sort la cible du workspace).
+- Boucle pick & place autonome (machine à états publiée sur `/brain_state`).
 - Publie `/joint_command`.
+- Services : `/brain/go_to` (so101_interfaces/GoToTarget),
+  `/brain/start`, `/brain/stop` (std_srvs/Trigger).
+
+### interfaces
+
+Les types de services custom sont dans le package **`so101_interfaces`**
+(ament_cmake + rosidl) : `GoToTarget.srv`, `SetJointPositions.srv`
+(utilisé par `/driver/set_joints`, réservé aux tests manuels).
 
 ---
 
@@ -113,7 +132,7 @@ Le backend (**MuJoCo** ou **SO101Follower**) **ne publie jamais directement de t
 | Backend (`send_action`/`get_observation`) | Degrés, gripper `0–100 %` |
 | Driver | ≥ 20 Hz |
 | Perception | 5–10 Hz |
-| Commandes | 50–100 Hz |
+| Boucle de contrôle driver | 50 Hz (ré-application de la dernière consigne) |
 | MuJoCo | La caméra regarde selon l'axe **−Z** (conversion pixel → rayon à adapter) |
 
 ---
